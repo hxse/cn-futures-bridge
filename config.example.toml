@@ -1,0 +1,26 @@
+# 调试阶段只使用 SimNow；本版只启动终端，不读取下列账号执行登录。
+[bridge]
+environment = "simnow"
+data_dir = "/data"
+startup_timeout_seconds = 90
+
+[account]
+username = ""
+password = ""
+
+[api]
+host = "0.0.0.0"
+port = 8000
+# 留空时仅通过脚本映射到宿主机 127.0.0.1；需要鉴权时设置 Bearer token。
+token = ""
+
+[desktop]
+width = 1280
+height = 800
+dpi = 96
+
+[vnc]
+# 只影响 vnc 镜像；headless 不安装远程桌面组件。
+# 两个端口由启动脚本仅映射到宿主机 127.0.0.1。
+port = 5900
+web_port = 6080

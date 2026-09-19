@@ -1,0 +1,10 @@
+# 来源为厂商产品页提供的普通快期2完整包，内含上期技术 / 9999 站点。
+# 不包含用户凭证；升级此文件必须重新检查包内容及启动兼容性。
+source_page = "https://www.shinnytech.com/products/q72"
+url = "https://publish2.shinnytech.com/web/exe/Q72_beta_shinny_21990_2.93.405.1998.exe"
+sha256 = "f6ada4ed84f0b6622c1575571a3d8872eba94a935d0f8f9bc5c0aaa120d3508e"
+version = "2.93.405.1998"
+payload = "userappdata/Q72_shinny_21990_beta/00000000000000"
+executable = "q7_release.exe"
+broker_id = "9999"
+broker_name = "上期技术"

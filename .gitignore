@@ -1,0 +1,12 @@
+/config.toml
+/vendor/*.exe
+/vendor/*.download
+/data/
+/debug/
+/doc/drafts/
+/.venv/
+__pycache__/
+*.py[cod]
+/.pytest_cache/
+/dist/
+/*.egg-info/

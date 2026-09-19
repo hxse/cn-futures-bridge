@@ -1,0 +1,10 @@
+*
+!Containerfile
+!config.example.toml
+!terminal.lock.toml
+!cn_futures_bridge/
+!cn_futures_bridge/**
+!container/
+!container/**
+!vendor/
+!vendor/q72-installer.exe

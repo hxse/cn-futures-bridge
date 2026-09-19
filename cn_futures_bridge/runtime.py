@@ -1,0 +1,223 @@
+"""管理专用虚拟桌面与终端；本阶段不输入账号、不发送交易按键。"""
+
+import fcntl
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import tempfile
+import threading
+import time
+
+from .config import Settings
+
+LOG = logging.getLogger(__name__)
+
+
+class RuntimeErrorCode(RuntimeError):
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+class Runtime:
+    def __init__(self, settings: Settings, vnc: bool = False):
+        self.settings = settings
+        self.vnc = vnc
+        self.processes: dict[str, subprocess.Popen] = {}
+        self.state = "starting"
+        self.error: dict | None = None
+        self.window_visible = False
+        self.manifest: dict = {}
+        self.stop_event = threading.Event()
+        self.lock = threading.Lock()
+        self.screenshot_lock = threading.Lock()
+        self.session_lock = None
+        self.worker: threading.Thread | None = None
+        self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
+                        WINEPREFIX=str(settings.data_dir / "wine"),
+                        WINEDEBUG="-all", WINEDLLOVERRIDES="mscoree,mshtml=")
+
+    def start(self) -> None:
+        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+        self.session_lock = (self.settings.data_dir / ".session.lock").open("a")
+        try:
+            fcntl.flock(self.session_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            self.session_lock.close()
+            self.session_lock = None
+            raise RuntimeErrorCode("SESSION_IN_USE", "持久化目录已被另一实例使用") from exc
+        (self.settings.data_dir / "logs").mkdir(exist_ok=True)
+        self.worker = threading.Thread(target=self._run, name="desktop-runtime", daemon=True)
+        self.worker.start()
+
+    def _spawn(self, name: str, command: list[str], cwd: Path | None = None) -> subprocess.Popen:
+        path = self.settings.data_dir / "logs" / f"{name}.log"
+        with path.open("ab", buffering=0) as stream:
+            process = subprocess.Popen(command, cwd=cwd, env=self.env, stdout=stream,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
+        self.processes[name] = process
+        return process
+
+    def _command(self, command: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
+        return subprocess.run(command, env=self.env, capture_output=True, timeout=timeout,
+                              check=False)
+
+    def _wait(self, predicate, timeout: int, code: str, message: str) -> None:
+        deadline = time.monotonic() + timeout
+        while not self.stop_event.is_set():
+            if predicate():
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeErrorCode(code, message)
+            self.stop_event.wait(0.25)
+        raise RuntimeErrorCode("STOPPING", "启动过程已停止")
+
+    def _prepare_files(self, seed: Path = Path("/opt/terminal")) -> Path:
+        self.manifest = json.loads((seed / "bridge-manifest.json").read_text())
+        target = self.settings.data_dir / "terminal"
+        if not target.exists():
+            with tempfile.TemporaryDirectory(dir=self.settings.data_dir) as temporary:
+                staged = Path(temporary) / "terminal"
+                shutil.copytree(seed, staged)
+                staged.rename(target)
+        # 检查全部随包文件，持久化目录不能静默继承不同版本的程序或站点。
+        for relative, expected in self.manifest["files"].items():
+            path = target / relative
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise RuntimeErrorCode("TERMINAL_CHANGED", f"终端文件与镜像不一致：{relative}")
+        return target
+
+    def _initialize_wine(self) -> None:
+        marker = self.settings.data_dir / "wine" / ".bridge-initialized"
+        # 前缀可以持久化，Wine 的系统会话每次容器启动仍须先完成引导。
+        process = self._spawn("wineboot", ["wineboot", "--init"])
+        self._wait(lambda: process.poll() is not None, self.settings.startup_timeout_seconds,
+                   "WINE_INIT_TIMEOUT", "Wine 初始化超时，查看 logs/wineboot.log")
+        if process.returncode != 0:
+            raise RuntimeErrorCode("WINE_INIT_FAILED", "Wine 初始化失败，查看 logs/wineboot.log")
+        if marker.exists():
+            return
+        result = self._command(["wine", "regedit", "/S", "/opt/bridge/container/fonts.reg"], 30)
+        if result.returncode != 0:
+            raise RuntimeErrorCode("FONT_SETUP_FAILED", "Wine 字体映射初始化失败")
+        marker.write_text("win32\n")
+
+    def _has_window(self, *, login_only: bool = False) -> bool:
+        process = self.processes.get("terminal")
+        if process is None or process.poll() is not None:
+            return False
+        result = self._command(["xdotool", "search", "--all", "--onlyvisible", "--pid",
+                                str(process.pid), "--name",
+                                "^用户登录$" if login_only else "^用户登录$|快期"], 5)
+        return result.returncode == 0 and bool(result.stdout.strip())
+
+    def _run(self) -> None:
+        try:
+            target = self._prepare_files()
+            size = f"{self.settings.width}x{self.settings.height}x24"
+            self._spawn("xvfb", ["Xvfb", ":99", "-screen", "0", size, "-dpi",
+                                  str(self.settings.dpi), "-s", "0", "-noreset",
+                                  "-nolisten", "tcp", "-ac"])
+            self._wait(lambda: self._command(["xdpyinfo"]).returncode == 0,
+                       15, "DISPLAY_TIMEOUT", "虚拟屏幕启动超时")
+            self._spawn("openbox", ["openbox", "--config-file", "/opt/bridge/container/openbox.xml"])
+            # 持久化 Wine 再次启动很快，必须等窗口管理器接管屏幕后再创建快期窗口。
+            self._wait(lambda: b"window id # 0x" in self._command(
+                ["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"]).stdout,
+                15, "WINDOW_MANAGER_TIMEOUT", "窗口管理器未就绪")
+            if self.vnc:
+                self._start_vnc()
+            self._initialize_wine()
+            self._spawn("terminal", ["wine", str(target / self.manifest["executable"])], target)
+            self._wait(lambda: self._has_window(login_only=True), self.settings.startup_timeout_seconds,
+                       "WINDOW_TIMEOUT", "未观察到快期窗口，查看截图与 logs/terminal.log")
+            with self.lock:
+                self.state = "window_visible"
+                self.window_visible = True
+            LOG.info("快期窗口已出现；账号登录和交易能力尚未验证")
+            while not self.stop_event.wait(1):
+                for name in ("xvfb", "openbox", "terminal", "vnc", "novnc"):
+                    process = self.processes.get(name)
+                    if process is not None and process.poll() is not None:
+                        raise RuntimeErrorCode("PROCESS_EXITED", f"{name} 进程退出，查看对应日志")
+                visible = self._has_window()
+                with self.lock:
+                    self.window_visible = visible
+                    self.state = "window_visible" if visible else "window_missing"
+        except RuntimeErrorCode as exc:
+            if not self.stop_event.is_set():
+                self._fail(exc.code, str(exc))
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            self._fail("STARTUP_FAILED", f"启动失败：{type(exc).__name__}；查看容器日志")
+            LOG.exception("桌面启动异常")
+        finally:
+            # 启动失败时保留现有桌面和 VNC，便于查看错误窗口；不自动重启终端。
+            if self.stop_event.is_set():
+                self._stop_processes()
+
+    def _start_vnc(self) -> None:
+        self._spawn("vnc", ["x11vnc", "-display", ":99", "-forever", "-shared",
+                            "-nopw", "-rfbport", str(self.settings.vnc_port), "-noxdamage"])
+        self._spawn("novnc", ["websockify", "--web=/usr/share/novnc/",
+                              str(self.settings.web_port), f"127.0.0.1:{self.settings.vnc_port}"])
+
+    def _fail(self, code: str, message: str) -> None:
+        with self.lock:
+            self.state = "failed"
+            self.error = {"code": code, "message": message}
+        LOG.error("%s: %s", code, message)
+
+    def status(self) -> dict:
+        with self.lock:
+            return {
+                "environment": self.settings.environment,
+                "stage": "terminal_bootstrap",
+                "state": self.state,
+                "terminal_version": self.manifest.get("version"),
+                "terminal_window_visible": self.window_visible,
+                "account_configured": bool(self.settings.account.username and self.settings.account.password),
+                "login_state": "unverified",
+                "trading_ready": False,
+                "automation_enabled": False,
+                "vnc_enabled": self.vnc,
+                "error": self.error,
+            }
+
+    def screenshot(self) -> bytes:
+        with self.screenshot_lock, tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "desktop.png"
+            try:
+                result = self._command(["scrot", "--overwrite", str(path)], 5)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RuntimeErrorCode("SCREENSHOT_UNAVAILABLE", "截图进程失败或超时") from exc
+            if result.returncode != 0 or not path.exists():
+                raise RuntimeErrorCode("SCREENSHOT_UNAVAILABLE", "虚拟桌面当前不能截图")
+            return path.read_bytes()
+
+    def _stop_processes(self) -> None:
+        for process in reversed(list(self.processes.values())):
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=3)
+                except ProcessLookupError:
+                    pass
+        if (self.settings.data_dir / "wine").exists():
+            self._command(["wineserver", "-k"], 5)
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.worker is not None:
+            self.worker.join(timeout=self.settings.startup_timeout_seconds + 10)
+        self._stop_processes()
+        if self.session_lock is not None:
+            self.session_lock.close()
+            self.session_lock = None

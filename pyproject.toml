@@ -1,0 +1,9 @@
+[project]
+name = "cn-futures-bridge"
+version = "0.1.0"
+description = "通过桌面期货终端提供服务的 SimNow 启动骨架"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false

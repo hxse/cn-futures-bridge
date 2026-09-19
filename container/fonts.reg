@@ -1,0 +1,8 @@
+REGEDIT4
+
+[HKEY_CURRENT_USER\Software\Wine\Fonts\Replacements]
+"SimSun"="WenQuanYi Micro Hei"
+"NSimSun"="WenQuanYi Micro Hei"
+"Microsoft YaHei"="WenQuanYi Micro Hei"
+"MS Shell Dlg"="WenQuanYi Micro Hei"
+"MS Shell Dlg 2"="WenQuanYi Micro Hei"
