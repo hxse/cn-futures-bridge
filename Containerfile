@@ -22,6 +22,16 @@ COPY tests ./tests
 COPY config.example.toml terminal.lock.toml ./
 ENV PATH="/opt/venv/bin:${PATH}" UV_OFFLINE=1
 
+FROM toolchain AS native-build
+RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i686-posix \
+    && rm -rf /var/lib/apt/lists/*
+COPY native ./native
+RUN mkdir /native && i686-w64-mingw32-gcc -Wall -Wextra -Werror -Wno-unused-parameter -O2 -static-libgcc -shared \
+    native/hook.c native/import_scope.c native/common.c native/query.c native/gui.c \
+    -o /native/cfb-hook.dll -Wl,--kill-at \
+    && i686-w64-mingw32-gcc -Wall -Wextra -Werror -Wno-unused-parameter -O2 -static-libgcc -municode \
+    native/controller.c -o /native/cfb-controller.exe
+
 FROM docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b AS vnc-assets
 # 只提取 noVNC 的浏览器静态资源，避免安装它的 Node/OpenStack 依赖。
 RUN apt-get update && cd /tmp && apt-get download novnc=1:1.3.0-1 \
@@ -56,6 +66,7 @@ ENV LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8 TZ=Asia/Shanghai PYTHONUNBUFFERED=1 PYTH
 RUN install -d -o root -g root -m 1777 /tmp/.X11-unix
 WORKDIR /opt/bridge
 COPY --from=dependencies /opt/venv /opt/venv
+COPY --from=native-build /native /opt/bridge/native
 ENV PATH="/opt/venv/bin:${PATH}"
 COPY --from=payload /opt/terminal /opt/terminal
 COPY cn_futures_bridge ./cn_futures_bridge

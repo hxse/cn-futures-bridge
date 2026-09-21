@@ -8,19 +8,19 @@
 
 headless 与 vnc 共用终端、Python 依赖和业务代码；vnc 只增加远程桌面组件。两者都有 Xvfb/Openbox、截图和中文字体，1280×800/96 DPI 为默认设置。先确认显示与窗口管理器，再引导 Wine 会话、启动客户端；持久化前缀不跳过 Wine 会话引导。
 
-数据卷默认 `/data`，包含 terminal、wine、logs、artifacts，后续操作数据库保留 state 目录。`.session.lock` 排他锁保护整个实例；停止只处理本容器进程，保留数据卷。程序退出或启动失败不自动重登和无限重启。
+数据卷默认 `/data`，包含 terminal、wine、logs、artifacts，操作数据库位于 state 目录。`.session.lock` 排他锁保护整个实例；停止只处理本容器进程，保留数据卷。程序退出或启动失败不自动重登和无限重启。
 
 客户端已有独立探针能力见 [terminal_capabilities.md](terminal_capabilities.md) 和 [trading_status.md](trading_status.md)，不等于对应 REST 已发布。
 
 ## 配置与入口
 
-唯一配置为 config.toml/config.example.toml，节包括 bridge、account、api、desktop、vnc、execution、logging、artifacts。未知字段和非法类型拒绝；Pydantic 对象隐藏凭证，错误不回显原值。账户为空可启动，当前正式运行阶段尚不自动登录。
+唯一配置为 config.toml/config.example.toml，节包括 bridge、account、api、desktop、vnc、execution、logging、artifacts。未知字段和非法类型拒绝；Pydantic 对象隐藏凭证，错误不回显原值。账户为空可启动；配置账户后启动执行器，尝试一次 SimNow 电信2登录，失败不自动重试。
 
 HTTP 无鉴权，api.token 不再接受；`just migrate-config` 显式迁移并保存 0600 的 config.toml.bak，已有备份不覆盖。凭证、备份、debug 和数据不进入构建上下文。宿主端口只发布到 127.0.0.1。
 
 `just run [vnc|headless]` 构建并启动，`just build` 默认构建两种镜像，`just up` 默认 vnc。镜像与同名现有实例不符时要求显式 down；不会自动停止现有实例。`CFB_CONTAINER`、`CFB_VOLUME` 可为隔离环境选择不同容器和卷名，端口仍由 TOML 指定。
 
-`just status/logs/screenshot/clean` 提供运维；pause/resume 当前返回执行器未启用，不以空成功代替。命令通过容器内运维入口及受管实例的 Unix socket 执行；停止后的 clean 需取得目录排他锁。旧宿主 Python 入口已退出。
+`just status/logs/screenshot/clean` 提供运维；pause/resume 由唯一执行器处理，先等待当前操作退出，再允许人工接管；恢复前检查账户与界面。命令通过容器内运维入口及受管实例的 Unix socket 执行；停止后的 clean 需取得目录排他锁。旧宿主 Python 入口已退出。
 
 ## HTTP 诊断
 
@@ -28,11 +28,11 @@ HTTP 无鉴权，api.token 不再接受；`just migrate-config` 显式迁移并�
 | --- | --- |
 | GET /healthz | HTTP 存活，不检测终端 |
 | GET /v1/status | 当前 Pydantic 状态对象 |
-| GET /readyz | 当前窗口可见且启动未失败为 200，否则 503 |
+| GET /readyz | trading_ready 为真返回 200，否则 503 |
 | GET /v1/desktop/screenshot | 虚拟屏幕 PNG；不可截图时明确报错 |
 | GET /docs、/openapi.json | FastAPI 文档与接口模型 |
 
-响应带 X-Request-ID 和 no-store，不记录请求头或凭证。stage 为 terminal_bootstrap，login_state 为 unverified，trading_ready/automation_enabled 为 false；executor_state 为 unavailable，队列为空，能力为 unverified。窗口可见不是交易就绪证明，业务路由在后续阶段接入。
+响应带 X-Request-ID 和 no-store，不记录请求头或凭证。桌面尚未接入执行器时 stage 为 terminal_bootstrap；接入后为 terminal_execution，状态区分登录、连接、队列、暂停和 blocked。trading_ready 要求真实身份、连接、交易日和执行权就绪；窗口可见不证明交易就绪。内部执行链路及能力边界见 [terminal_execution.md](terminal_execution.md)，业务路由由后续集成阶段接入。
 
 ## 容量与生命周期
 

@@ -70,7 +70,7 @@ def create_app(service: BridgeService, *, manage_lifecycle: bool = True) -> Fast
     @app.get("/readyz", response_model=ServiceStatus, tags=["diagnostics"])
     def ready() -> JSONResponse:
         value = service.status()
-        available = value.state == "window_visible" and value.terminal_window_visible
+        available = value.trading_ready
         return JSONResponse(status_code=200 if available else 503, content=value.model_dump())
 
     @app.get("/v1/desktop/screenshot", tags=["diagnostics"], response_class=Response)

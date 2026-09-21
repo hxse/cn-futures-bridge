@@ -10,5 +10,7 @@
 !cn_futures_bridge/**
 !container/
 !container/**
+!native/
+!native/**
 !vendor/
 !vendor/q72-installer.exe
