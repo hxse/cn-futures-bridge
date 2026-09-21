@@ -1,5 +1,9 @@
 *
 !Containerfile
+!pyproject.toml
+!uv.lock
+!tests/
+!tests/**
 !config.example.toml
 !terminal.lock.toml
 !cn_futures_bridge/

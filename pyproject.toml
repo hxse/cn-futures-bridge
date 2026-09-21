@@ -1,9 +1,22 @@
 [project]
 name = "cn-futures-bridge"
 version = "0.1.0"
-description = "通过桌面期货终端提供服务的 SimNow 启动骨架"
+description = "通过固定期货终端提供单账户 SimNow REST 服务"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["fastapi>=0.115,<1", "pydantic>=2.10,<3", "uvicorn>=0.34,<1", "tomli-w>=1.2,<2"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ty>=0.0.1"]
 
 [tool.uv]
 package = false
+
+[tool.ty.environment]
+python = "/opt/venv"
+python-version = "3.11"
+
+[tool.ty.src]
+include = ["cn_futures_bridge", "container", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,90 +1,127 @@
-"""从 TOML 读取唯一运行配置，不打印账号和口令。"""
+"""唯一 TOML 配置模型；校验错误只包含字段名，不回显凭证。"""
 
-from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
+from typing import Annotated, Literal, Self
+
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
+
+Positive = Annotated[int, Field(gt=0)]
+Port = Annotated[int, Field(ge=1024, le=65535)]
+Timeout = Annotated[int, Field(ge=1, le=300000)]
 
 
 class ConfigError(ValueError):
     pass
 
 
-@dataclass(frozen=True)
-class Account:
-    username: str = field(repr=False)
-    password: str = field(repr=False)
+class ConfigModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True, hide_input_in_errors=True)
 
 
-@dataclass(frozen=True)
-class Settings:
-    environment: str
-    data_dir: Path
-    startup_timeout_seconds: int
-    account: Account
-    api_host: str
-    api_port: int
-    api_token: str = field(repr=False)
-    width: int
-    height: int
-    dpi: int
-    vnc_port: int
-    web_port: int
+class BridgeConfig(ConfigModel):
+    environment: Literal["simnow"] = "simnow"
+    data_dir: Path = Path("/data")
+    startup_timeout_seconds: Annotated[int, Field(ge=15, le=300)] = 90
+
+    @field_validator("data_dir", mode="before")
+    @classmethod
+    def absolute_directory(cls, value: object) -> Path:
+        if not isinstance(value, (str, Path)):
+            raise ValueError("必须是独立的绝对目录")
+        path = Path(value)
+        if not path.is_absolute() or path == Path("/") or any(c in str(path) for c in "\r\n\0"):
+            raise ValueError("必须是独立的绝对目录")
+        return path
+
+
+class AccountConfig(ConfigModel):
+    username: SecretStr = Field(default=SecretStr(""), repr=False)
+    password: SecretStr = Field(default=SecretStr(""), repr=False)
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.username.get_secret_value() and self.password.get_secret_value())
+
+
+class ApiConfig(ConfigModel):
+    host: Annotated[str, Field(min_length=1)] = "0.0.0.0"
+    port: Port = 8000
+
+
+class DesktopConfig(ConfigModel):
+    width: Annotated[int, Field(ge=800, le=3840)] = 1280
+    height: Annotated[int, Field(ge=600, le=2160)] = 800
+    dpi: Annotated[int, Field(ge=72, le=192)] = 96
+
+
+class VncConfig(ConfigModel):
+    port: Port = 5900
+    web_port: Port = 6080
+
+
+class ExecutionConfig(ConfigModel):
+    queue_capacity: Annotated[int, Field(ge=1, le=1024)] = 32
+    queue_timeout_ms: Timeout = 5000
+    step_timeout_ms: Timeout = 3000
+    poll_interval_ms: Annotated[int, Field(ge=1, le=1000)] = 10
+    gui_action_gap_ms: Annotated[int, Field(ge=0, le=300000)] = 10
+    idempotency_ttl_hours: Positive = 168
+    journal_max_bytes: Positive = 134217728
+
+    @model_validator(mode="after")
+    def polling_deadline(self) -> Self:
+        if self.poll_interval_ms > self.step_timeout_ms:
+            raise ValueError("poll_interval_ms 不得大于 step_timeout_ms")
+        return self
+
+
+class LoggingConfig(ConfigModel):
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    max_file_bytes: Positive = 20971520
+    max_total_bytes: Positive = 209715200
+
+    @model_validator(mode="after")
+    def budget(self) -> Self:
+        if self.max_file_bytes > self.max_total_bytes:
+            raise ValueError("单文件上限不得大于日志总预算")
+        return self
+
+
+class ArtifactConfig(ConfigModel):
+    max_total_bytes: Positive = 314572800
+    cleanup_interval_seconds: Positive = 60
+    min_free_bytes: Positive = 536870912
+
+
+class Settings(ConfigModel):
+    bridge: BridgeConfig = Field(default_factory=BridgeConfig)
+    account: AccountConfig = Field(default_factory=AccountConfig)
+    api: ApiConfig = Field(default_factory=ApiConfig)
+    desktop: DesktopConfig = Field(default_factory=DesktopConfig)
+    vnc: VncConfig = Field(default_factory=VncConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    artifacts: ArtifactConfig = Field(default_factory=ArtifactConfig)
+
+    @model_validator(mode="after")
+    def distinct_ports(self) -> Self:
+        if len({self.api.port, self.vnc.port, self.vnc.web_port}) != 3:
+            raise ValueError("API、VNC 和 noVNC 端口必须互不相同")
+        return self
 
 
 def load_settings(path: Path) -> Settings:
     try:
-        with path.open("rb") as stream:
-            data = tomllib.load(stream)
+        data = tomllib.loads(path.read_text())
     except OSError as exc:
-        raise ConfigError(f"无法读取配置文件：{path}") from exc
-    except tomllib.TOMLDecodeError as exc:
-        # 解析器错误可能带出包含密码的原始行。
-        raise ConfigError("配置文件不是有效的 TOML") from exc
-    schema = {
-        "bridge": {"environment", "data_dir", "startup_timeout_seconds"},
-        "account": {"username", "password"},
-        "api": {"host", "port", "token"},
-        "desktop": {"width", "height", "dpi"},
-        "vnc": {"port", "web_port"},
-    }
-    if set(data) != set(schema):
-        raise ConfigError("配置必须且只能包含 bridge/account/api/desktop/vnc 五节")
-    for section, keys in schema.items():
-        if not isinstance(data[section], dict) or set(data[section]) != keys:
-            raise ConfigError(f"配置节 {section} 的字段不完整或存在未知字段")
-
-    def string(section: str, key: str, allow_empty: bool = False) -> str:
-        value = data[section][key]
-        if not isinstance(value, str) or (not allow_empty and not value.strip()):
-            raise ConfigError(f"{section}.{key} 必须是{'可为空的' if allow_empty else '非空'}字符串")
-        return value
-
-    def number(section: str, key: str, low: int, high: int) -> int:
-        value = data[section][key]
-        if type(value) is not int or not low <= value <= high:
-            raise ConfigError(f"{section}.{key} 必须是 {low} 到 {high} 之间的整数")
-        return value
-
-    environment = string("bridge", "environment")
-    if environment != "simnow":
-        raise ConfigError("本阶段 bridge.environment 只支持 simnow")
-    data_dir = Path(string("bridge", "data_dir"))
-    if not data_dir.is_absolute() or data_dir == Path("/"):
-        raise ConfigError("bridge.data_dir 必须是独立的绝对目录")
-    settings = Settings(
-        environment=environment,
-        data_dir=data_dir,
-        startup_timeout_seconds=number("bridge", "startup_timeout_seconds", 15, 300),
-        account=Account(string("account", "username", True), string("account", "password", True)),
-        api_host=string("api", "host"),
-        api_port=number("api", "port", 1024, 65535),
-        api_token=string("api", "token", True),
-        width=number("desktop", "width", 800, 3840),
-        height=number("desktop", "height", 600, 2160),
-        dpi=number("desktop", "dpi", 72, 192),
-        vnc_port=number("vnc", "port", 1024, 65535),
-        web_port=number("vnc", "web_port", 1024, 65535),
-    )
-    if len({settings.api_port, settings.vnc_port, settings.web_port}) != 3:
-        raise ConfigError("API、VNC 和 noVNC 端口必须互不相同")
-    return settings
+        raise ConfigError("无法读取配置文件") from exc
+    except (UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError("配置文件不是有效的 UTF-8 TOML") from exc
+    if isinstance(data.get("api"), dict) and "token" in data["api"]:
+        raise ConfigError("api.token 已退出，请先执行 just migrate-config")
+    try:
+        return Settings.model_validate(data)
+    except ValidationError as exc:
+        fields = [".".join(map(str, item["loc"])) or "配置组合" for item in exc.errors()]
+        raise ConfigError("配置字段无效或存在未知字段：" + ", ".join(fields)) from None

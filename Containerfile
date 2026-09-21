@@ -1,3 +1,27 @@
+FROM ghcr.io/astral-sh/uv:0.9.18 AS uv-bin
+
+FROM docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b AS toolchain
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=uv-bin /uv /uvx /usr/local/bin/
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_DOWNLOADS=never PYTHONDONTWRITEBYTECODE=1
+WORKDIR /opt/bridge
+
+FROM toolchain AS dependencies
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+FROM toolchain AS tools
+ENV UV_TOOL_BIN_DIR=/usr/local/bin
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen \
+    && /opt/venv/bin/python -c 'import importlib.metadata,subprocess; subprocess.run(["uv","tool","install","ty=="+importlib.metadata.version("ty")],check=True)'
+COPY cn_futures_bridge ./cn_futures_bridge
+COPY container ./container
+COPY tests ./tests
+COPY config.example.toml terminal.lock.toml ./
+ENV PATH="/opt/venv/bin:${PATH}" UV_OFFLINE=1
+
 FROM docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b AS vnc-assets
 # 只提取 noVNC 的浏览器静态资源，避免安装它的 Node/OpenStack 依赖。
 RUN apt-get update && cd /tmp && apt-get download novnc=1:1.3.0-1 \
@@ -31,8 +55,11 @@ RUN dpkg --add-architecture i386 && apt-get update \
 ENV LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8 TZ=Asia/Shanghai PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH="/opt/wine-stable/bin:${PATH}"
 RUN install -d -o root -g root -m 1777 /tmp/.X11-unix
 WORKDIR /opt/bridge
+COPY --from=dependencies /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
 COPY --from=payload /opt/terminal /opt/terminal
 COPY cn_futures_bridge ./cn_futures_bridge
+COPY pyproject.toml ./
 COPY container/fonts.reg container/openbox.xml ./container/
 COPY config.example.toml /etc/cn-futures-bridge/config.toml
 EXPOSE 8000

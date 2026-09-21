@@ -1,48 +1,47 @@
-# SimNow 终端启动与诊断
+# SimNow 容器运行与诊断
 
-项目整体遵循 [project_principles.md](project_principles.md) 的高性能与可靠性原则；终端适配和后续业务接口按其中的优先级选择操作方式。
+项目遵循 [项目原则](project_principles.md)。应用只在 Podman 内运行，宿主 just/bash 负责容器编排；配置、HTTP 和内部运维消息使用 Pydantic，唯一 HTTP 服务为 FastAPI/Uvicorn 单 worker。
 
-## 范围
+## 终端与镜像
 
-当前提供空账号启动、版本校验、专用桌面、进程日志、状态和截图 API；Python 3.11+，无第三方 Python 运行依赖。账号与交易自动化尚未接入，填写账号不触发登录；environment 只支持 simnow。
+`terminal.lock.toml` 锁定普通快期2 2.93.405.1998 的官方包及 SHA256，构建只保留原包的上期技术/9999 模拟站点，不修改其认证参数。WineHQ 11.0 的 32 位包版本锁定 `11.0.0.0~bookworm-1`；启动直接运行 q7_release.exe，先验证持久目录与镜像清单一致。
 
-固定包和原生模拟站点由根目录 terminal.lock.toml 定义。构建验证安装包 SHA256、主程序、上期技术 / 9999 站点，提取随包依赖并缩减站点列表；不改写该站点的服务器或认证参数。原生 SimNow 全天站点有 GUI 登录、行情、资金显示及拒单的历史样本；Wine 11 下电信2站点已通过 GUI 验证非零资金、挂单/撤单、买入开仓/卖出平仓成交及非空表格查询。能力、读取路径、耗时与未验证项见 [terminal_capabilities.md](terminal_capabilities.md)。这些客户端实测不表示自动登录或 REST 交易接口已经实现，也不证明其他站点兼容。
+headless 与 vnc 共用终端、Python 依赖和业务代码；vnc 只增加远程桌面组件。两者都有 Xvfb/Openbox、截图和中文字体，1280×800/96 DPI 为默认设置。先确认显示与窗口管理器，再引导 Wine 会话、启动客户端；持久化前缀不跳过 Wine 会话引导。
 
-## 配置与运行
+数据卷默认 `/data`，包含 terminal、wine、logs、artifacts，后续操作数据库保留 state 目录。`.session.lock` 排他锁保护整个实例；停止只处理本容器进程，保留数据卷。程序退出或启动失败不自动重登和无限重启。
 
-完整配置示例为根目录 config.example.toml，本地配置为 config.toml。两者使用相同 schema；实际配置与安装包缓存不进入版本控制，实际配置不进入镜像。init-config/up 仅在本地配置缺失时复制示例。
+客户端已有独立探针能力见 [terminal_capabilities.md](terminal_capabilities.md) 和 [trading_status.md](trading_status.md)，不等于对应 REST 已发布。
 
-配置节为 bridge、account、api、desktop、vnc；缺失、未知或类型错误直接拒绝。账号与 token 在对象表示、状态和错误中隐藏。API/桌面端口由启动脚本发布至宿主机 127.0.0.1，VNC 访问与 API token 分开；本阶段 VNC 依赖本机绑定与必要的 SSH 转发。
+## 配置与入口
 
-Containerfile 的 headless 与 vnc 共用 runtime 层，包括固定版本终端、32 位 Wine、字体、Xvfb、Openbox、截图与服务；vnc 只添加远程桌面组件和启动标记。两个变体的数据卷契约一致，同一数据目录通过文件锁排他使用。
+唯一配置为 config.toml/config.example.toml，节包括 bridge、account、api、desktop、vnc、execution、logging、artifacts。未知字段和非法类型拒绝；Pydantic 对象隐藏凭证，错误不回显原值。账户为空可启动，当前正式运行阶段尚不自动登录。
 
-公共运行层固定 WineHQ 稳定版 Wine 11.0，`wine-stable:i386` 与 `wine-stable-i386:i386` 均为 `11.0.0.0~bookworm-1`；通过官方签名软件源安装，签名公钥校验值固定在 Containerfile。只安装这一套 Wine，使用 `/opt/wine-stable/bin`，保留 `WINEARCH=win32`，不随构建自动追随新版。升级前先停止实例并备份数据卷，旧 Wine 前缀不承诺可直接降级。
+HTTP 无鉴权，api.token 不再接受；`just migrate-config` 显式迁移并保存 0600 的 config.toml.bak，已有备份不覆盖。凭证、备份、debug 和数据不进入构建上下文。宿主端口只发布到 127.0.0.1。
 
-data_dir 默认 /data，其中 terminal 为终端状态和运行文件，wine 为专用前缀，logs 为各进程日志。第一次启动复制提取结果，后续启动按镜像清单检查全部随包文件；变化时返回 TERMINAL_CHANGED，不自动覆盖。终端直接启动固定 q7_release.exe，不经更新启动器。
+`just run [vnc|headless]` 构建并启动，`just build` 默认构建两种镜像，`just up` 默认 vnc。镜像与同名现有实例不符时要求显式 down；不会自动停止现有实例。`CFB_CONTAINER`、`CFB_VOLUME` 可为隔离环境选择不同容器和卷名，端口仍由 TOML 指定。
 
-Xvfb 禁用屏保，headless 的显示和截图不依赖 VNC 客户端连接。
+`just status/logs/screenshot/clean` 提供运维；pause/resume 当前返回执行器未启用，不以空成功代替。命令通过容器内运维入口及受管实例的 Unix socket 执行；停止后的 clean 需取得目录排他锁。旧宿主 Python 入口已退出。
 
-图形进程使用镜像预建、root 所有且权限为 1777 的 /tmp/.X11-unix；Xvfb 使用 -noreset，健康探测断开不会重置屏幕，随后窗口管理器可继续连接。
+## HTTP 诊断
 
-先确认虚拟屏幕与窗口管理器就绪，再启动可选 VNC、引导 Wine 会话并启动终端；前缀持久化不跳过会话引导，字体映射仅首次执行。启动时按进程身份及“用户登录”标题确认窗口。初始化失败或终端进程退出不自动重试，保留已有桌面与 VNC 排查错误。停止容器清理自身进程和 Wine 会话；down 保留命名数据卷，切换变体需先停止旧实例。
-
-## HTTP 契约
-
-| 方法与路径 | 结果 |
+| 路径 | 含义 |
 | --- | --- |
-| GET /healthz | 200，{"status":"ok"}；仅表示 HTTP 存活，不要求 token |
-| GET /v1/status | 200，当前启动状态 |
-| GET /readyz | 窗口可见且启动未失败为 200，否则 503；响应为状态对象 |
-| GET /v1/desktop/screenshot | 200 image/png；不可截图为 503 错误对象 |
+| GET /healthz | HTTP 存活，不检测终端 |
+| GET /v1/status | 当前 Pydantic 状态对象 |
+| GET /readyz | 当前窗口可见且启动未失败为 200，否则 503 |
+| GET /v1/desktop/screenshot | 虚拟屏幕 PNG；不可截图时明确报错 |
+| GET /docs、/openapi.json | FastAPI 文档与接口模型 |
 
-非空 api.token 要求其余 GET 接口的 Authorization: Bearer token；错误 token 返回 401。响应禁止缓存。未知 GET 返回 404，POST 返回 405，不触发桌面或交易操作。
+响应带 X-Request-ID 和 no-store，不记录请求头或凭证。stage 为 terminal_bootstrap，login_state 为 unverified，trading_ready/automation_enabled 为 false；executor_state 为 unavailable，队列为空，能力为 unverified。窗口可见不是交易就绪证明，业务路由在后续阶段接入。
 
-状态字段：environment、stage、state、terminal_version、terminal_window_visible、account_configured、login_state、trading_ready、automation_enabled、vnc_enabled、error。stage 固定 terminal_bootstrap，login_state 固定 unverified，交易和自动化字段固定 false。
+## 容量与生命周期
 
-state 为 starting、window_visible、window_missing、failed。窗口标题探测只证明可见性，不证明登录成功或界面可正常交易。error 为 null 或 code/message；Wine 初始化、显示超时、窗口等待、文件变化和关键进程退出分别报告。
+Python、Wine、桌面和辅助进程输出由有界收集器写为 JSON 行日志，不把子进程 stdout/stderr 绑定到无限追加文件。单文件默认 20 MiB、日志合计 200 MiB；Podman k8s-file 日志另外限制 20 MiB。
 
-## 正式入口与验证
+终端 logs 目录下已识别的时间戳诊断文件及旧启动进程日志纳入预算。活动文件通过句柄检查保护，不强制截断；无法安全治理的活动写入超限时，服务停止终端并记录不可用状态。不能仅凭后缀递归删除 Wine、账户或 flow 文件。
 
-用户入口为 `uv run python tools/bridge.py`，子命令包括 init-config、fetch、build、up、down、status、screenshot、logs、test。build 选择 all/headless/vnc，up 选择 vnc/headless；具体示例见根目录 README.md。
+artifacts 中只管理明确登记的 op 工件目录，记录 active/ended/protected 状态。成功解析后释放临时 CSV；失败资料保留至容量需要淘汰，默认共享 300 MiB，无年龄清理。清理保护活动和未知提交证据，低磁盘或无法满足预算返回 STORAGE_UNAVAILABLE。
 
-默认 test 只验证本地配置与诊断 API，不访问外部服务或启动 Wine；真实镜像构建与空账号启动由独立的 build/up/status/screenshot/down 验证。资金、持仓、委托、日志事件解析和键盘/导入导出交易路径尚未接入正式入口，GUI 能力验证不扩大这些入口的职责。
+## 验证入口
+
+`just check` 构建工具镜像并在容器内执行 `uvx ty check`；`just test` 运行少量离线 pytest。检查不挂载实际账户配置、不启动 Wine、运行时关闭网络。Python 依赖由 uv.lock 锁定，宿主不需要部署应用依赖。完整 GUI、交易和状态变化的在线覆盖不能由类型检查推导。

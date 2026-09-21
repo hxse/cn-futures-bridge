@@ -1,4 +1,6 @@
 /config.toml
+/config.toml.bak
+/config.toml.*.tmp
 /vendor/*.exe
 /vendor/*.download
 /data/

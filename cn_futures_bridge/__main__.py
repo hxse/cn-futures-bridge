@@ -1,45 +1,32 @@
+"""容器服务入口；只有真实启动才加载桌面。"""
+
 import argparse
-import logging
 from pathlib import Path
-import signal
 import sys
 
-from .api import create_server
+import uvicorn
+
+from .api import create_app
 from .config import ConfigError, load_settings
-from .runtime import Runtime, RuntimeErrorCode
+from .service import BridgeService
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="SimNow 快期2启动与诊断")
-    parser.add_argument("--config", type=Path, default=Path("config.toml"))
-    parser.add_argument("--check-config", action="store_true", help="只校验配置，不启动桌面或连接网络")
+    parser = argparse.ArgumentParser(description="SimNow 终端桥接服务")
+    parser.add_argument("--config", type=Path, default=Path("/etc/cn-futures-bridge/config.toml"))
+    parser.add_argument("--check-config", action="store_true", help="只校验配置，不启动桌面")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         settings = load_settings(args.config)
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     if args.check_config:
-        print("配置有效：simnow；账号不会被自动登录")
+        print("配置有效：simnow")
         return 0
-    runtime = Runtime(settings, vnc=Path("/opt/bridge/.vnc-enabled").exists())
-    try:
-        server = create_server(runtime)
-        runtime.start()
-    except (OSError, RuntimeErrorCode) as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-    def stop(signum, frame):
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, stop)
-    try:
-        server.serve_forever(poll_interval=0.25)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-        runtime.stop()
+    service = BridgeService(settings, vnc=Path("/opt/bridge/.vnc-enabled").exists())
+    uvicorn.run(create_app(service), host=settings.api.host, port=settings.api.port,
+                workers=1, access_log=False, log_config=None)
     return 0
 
 

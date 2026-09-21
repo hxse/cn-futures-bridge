@@ -1,59 +1,80 @@
-"""启动阶段只开放状态和截图，不提供交易或任意桌面输入接口。"""
+"""唯一 FastAPI 应用；业务与诊断共用服务生命周期。"""
 
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
-import secrets
-from urllib.parse import urlsplit
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+import logging
+import time
+import uuid
 
-from .runtime import Runtime, RuntimeErrorCode
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
+from starlette.middleware.base import RequestResponseEndpoint
+
+from .errors import BridgeError, ErrorDetail, FieldProblem, ServiceStatus
+from .service import BridgeService
+
+LOG = logging.getLogger(__name__)
 
 
-def create_server(runtime: Runtime) -> ThreadingHTTPServer:
-    class Handler(BaseHTTPRequestHandler):
-        def setup(self):
-            super().setup()
-            self.connection.settimeout(10)
+def request_id(request: Request) -> str:
+    return str(request.state.request_id)
 
-        def reply(self, code: int, payload: dict | bytes, content_type: str = "application/json"):
-            body = payload if isinstance(payload, bytes) else json.dumps(payload, ensure_ascii=False).encode()
-            self.send_response(code)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            self.wfile.write(body)
 
-        def do_GET(self):
-            path = urlsplit(self.path).path
-            # healthz 只证明 HTTP 服务存活，不暴露账号或终端状态。
-            if path == "/healthz":
-                self.reply(200, {"status": "ok"})
-                return
-            token = runtime.settings.api_token
-            authorization = self.headers.get("Authorization", "")
-            if token and not secrets.compare_digest(authorization.encode(), f"Bearer {token}".encode()):
-                self.reply(401, {"error": {"code": "UNAUTHORIZED", "message": "需要有效的 Bearer token"}})
-                return
-            if path in ("/v1/status", "/readyz"):
-                status = runtime.status()
-                ready = status["state"] == "window_visible" and status["terminal_window_visible"]
-                self.reply(503 if path == "/readyz" and not ready else 200, status)
-            elif path == "/v1/desktop/screenshot":
-                try:
-                    self.reply(200, runtime.screenshot(), "image/png")
-                except RuntimeErrorCode as exc:
-                    self.reply(503, {"error": {"code": exc.code, "message": str(exc)}})
-            else:
-                self.reply(404, {"error": {"code": "NOT_FOUND", "message": "本阶段仅提供启动诊断接口"}})
+def create_app(service: BridgeService, *, manage_lifecycle: bool = True) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if manage_lifecycle:
+            await run_in_threadpool(service.start)
+        try:
+            yield
+        finally:
+            if manage_lifecycle:
+                await run_in_threadpool(service.stop)
 
-        def do_POST(self):
-            self.reply(405, {"error": {"code": "METHOD_NOT_ALLOWED", "message": "本阶段未开放写操作"}})
+    app = FastAPI(title="cn-futures-bridge", version="0.1.0", lifespan=lifespan)
 
-        def log_message(self, format, *args):
-            # 不把路径、查询串或请求头写入日志，防止调用方误传凭证。
-            pass
+    @app.middleware("http")
+    async def trace(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        request.state.request_id = "cfb-" + uuid.uuid4().hex
+        start = time.monotonic()
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        LOG.info("HTTP 请求结束", extra={"request_id": request_id(request), "action": request.method,
+                 "step": "response", "event": "end", "duration_ms": (time.monotonic()-start)*1000,
+                 "outcome": response.status_code})
+        return response
 
-    server = ThreadingHTTPServer((runtime.settings.api_host, runtime.settings.api_port), Handler)
-    server.daemon_threads = True
-    return server
+    @app.exception_handler(BridgeError)
+    async def bridge_error(request: Request, exc: BridgeError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content=exc.response(request_id(request)).model_dump())
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_arguments(request: Request, exc: RequestValidationError) -> JSONResponse:
+        problems = [FieldProblem(loc=list(error["loc"]), type=error["type"], message=error["msg"])
+                    for error in exc.errors()]
+        error = BridgeError("INVALID_ARGUMENTS", "请求参数无效", 422, details=problems)
+        return JSONResponse(status_code=422, content=error.response(request_id(request)).model_dump())
+
+    @app.get("/healthz", tags=["diagnostics"])
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/v1/status", response_model=ServiceStatus, tags=["diagnostics"])
+    def status() -> ServiceStatus:
+        return service.status()
+
+    @app.get("/readyz", response_model=ServiceStatus, tags=["diagnostics"])
+    def ready() -> JSONResponse:
+        value = service.status()
+        available = value.state == "window_visible" and value.terminal_window_visible
+        return JSONResponse(status_code=200 if available else 503, content=value.model_dump())
+
+    @app.get("/v1/desktop/screenshot", tags=["diagnostics"], response_class=Response)
+    def screenshot() -> Response:
+        return Response(service.screenshot(), media_type="image/png")
+
+    return app
