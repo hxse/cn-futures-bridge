@@ -28,7 +28,7 @@ def test_diagnostics_have_no_authentication() -> None:
 def test_configuration_rejects_legacy_token_and_bool_port(tmp_path: Path) -> None:
     example = Path("config.example.toml").read_text()
     target = tmp_path / "config.toml"
-    target.write_text(example.replace('port = 8000', 'port = true'))
+    target.write_text(example.replace('port = 45173', 'port = true'))
     with pytest.raises(ConfigError, match="api.port"):
         load_settings(target)
     target.write_text(example.replace('[api]', '[api]\ntoken = "private-secret"'))

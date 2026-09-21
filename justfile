@@ -16,11 +16,9 @@ fetch:
 build variant="all":
     bash scripts/podman.sh build {{quote(variant)}}
 
-up variant="vnc":
-    bash scripts/podman.sh up {{quote(variant)}}
-
-run variant="vnc":
-    bash scripts/podman.sh run {{quote(variant)}}
+# 准备配置、构建并启动；传 vnc 启用远程桌面。
+run mode="":
+    bash scripts/podman.sh run {{quote(mode)}}
 
 down:
     bash scripts/podman.sh down
@@ -43,9 +41,9 @@ resume:
 clean:
     bash scripts/podman.sh clean
 
-# 工具镜像内执行 uvx ty check，不挂载真实配置。
+# 在宿主机进行静态检查。
 check:
-    bash scripts/podman.sh check
+    uvx ty check
 
 # 少量离线 pytest 冒烟检查。
 test:

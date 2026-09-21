@@ -4,7 +4,7 @@
 
 整个项目以高性能、可靠为共同目标，适用于终端适配、查询、交易、异常处理和 REST 封装。性能优化须保留参数核对、目标身份确认、结果校验和异常处理；可靠性须由实际业务结果证明，不能仅凭按键返回、窗口消失或文件生成判断成功。
 
-本文规定当前有效的选型与验证原则，不表示所有能力已经实现。正式接口范围见 [bootstrap.md](bootstrap.md)，已验证能力、性能口径及剩余边界见 [terminal_capabilities.md](terminal_capabilities.md)。
+本文规定当前有效的选型与验证原则，不表示所有能力已经实现。正式接口范围见 [api.md](api.md)，运行入口见 [bootstrap.md](bootstrap.md)，已验证能力、性能口径及剩余边界见 [terminal_capabilities.md](terminal_capabilities.md)。
 
 ## 操作方式的优先级
 

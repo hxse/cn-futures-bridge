@@ -28,9 +28,18 @@ managed() {
 variant() {
     [[ "$1" == vnc || "$1" == headless ]] || { echo '镜像变体只接受 vnc/headless' >&2; exit 2; }
 }
+build_images() {
+    local cfb_variant="$1"
+    local -a cfb_variants
+    if [[ "$cfb_variant" == all ]]; then cfb_variants=(headless vnc); else variant "$cfb_variant"; cfb_variants=("$cfb_variant"); fi
+    workspace_op fetch
+    local cfb_variant_item
+    for cfb_variant_item in "${cfb_variants[@]}"; do
+        podman build --layers --target "$cfb_variant_item" -t "$cfb_prefix-$cfb_variant_item" -f Containerfile .
+    done
+}
 start_container() {
     variant "$1"
-    workspace_op init-config
     local cfb_api cfb_vnc cfb_web cfb_data
     read -r cfb_api cfb_vnc cfb_web cfb_data < <(layout)
     [[ -n "$cfb_data" ]] || { echo '无法读取配置，请先检查或 migrate-config' >&2; exit 1; }
@@ -40,7 +49,7 @@ start_container() {
         local cfb_existing cfb_wanted
         cfb_existing=$(podman inspect --format '{{.Image}}' "$cfb_name")
         cfb_wanted=$(podman image inspect --format '{{.Id}}' "$cfb_target")
-        [[ "$cfb_existing" == "$cfb_wanted" ]] || { echo '镜像不同，请显式 just down 后再 up' >&2; exit 1; }
+        [[ "$cfb_existing" == "$cfb_wanted" ]] || { echo '镜像不同，请先 just down，再用 just run 或 just run vnc 启动' >&2; exit 1; }
         [[ $(podman inspect --format '{{.State.Running}}' "$cfb_name") == true ]] || podman start "$cfb_name"
         return
     fi
@@ -62,20 +71,25 @@ shift || true
 case "$cfb_command" in
     tools) build_tools ;;
     init-config|migrate-config|fetch) build_tools; workspace_op "$cfb_command" ;;
-    check) build_tools; podman run --rm --network=none "$cfb_tools" uvx ty check ;;
     test) build_tools; podman run --rm --network=none "$cfb_tools" python -m pytest -q ;;
-    build|run)
+    build)
         cfb_variant=${1:-all}
-        [[ "$cfb_command" != run || "$cfb_variant" != all ]] || cfb_variant=vnc
+        [[ "$cfb_variant" == all ]] || variant "$cfb_variant"
         build_tools
-        workspace_op fetch
-        if [[ "$cfb_variant" == all ]]; then cfb_variants=(headless vnc); else variant "$cfb_variant"; cfb_variants=("$cfb_variant"); fi
-        for cfb_variant_item in "${cfb_variants[@]}"; do
-            podman build --layers --target "$cfb_variant_item" -t "$cfb_prefix-$cfb_variant_item" -f Containerfile .
-        done
-        [[ "$cfb_command" != run ]] || start_container "$cfb_variant"
+        build_images "$cfb_variant"
         ;;
-    up) build_tools; start_container "${1:-vnc}" ;;
+    run)
+        case "${1:-}" in
+            '') cfb_variant=headless ;;
+            vnc) cfb_variant=vnc ;;
+            *) echo '启动方式：just run 或 just run vnc' >&2; exit 2 ;;
+        esac
+        build_tools
+        workspace_op init-config
+        layout > /dev/null
+        build_images "$cfb_variant"
+        start_container "$cfb_variant"
+        ;;
     down)
         if podman container exists "$cfb_name"; then managed; podman stop --time 20 "$cfb_name"; podman rm "$cfb_name"; fi
         ;;

@@ -4,7 +4,7 @@ from decimal import Decimal
 import math
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serializer, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, field_serializer, model_validator
 
 Exchange = Literal["SHFE", "INE", "DCE", "CZCE", "CFFEX", "GFEX"]
 Side = Literal["buy", "sell"]
@@ -18,8 +18,13 @@ TimeText = Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5]
 
 
 def price_value(value: object) -> Decimal:
-    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)) or not math.isfinite(float(value)):
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise ValueError("价格必须是有限 JSON 数值")
+    try:
+        if not math.isfinite(float(value)):
+            raise ValueError("价格必须是有限 JSON 数值")
+    except OverflowError as exc:
+        raise ValueError("价格超出有限 JSON 数值范围") from exc
     result = Decimal(str(value))
     if result <= 0:
         raise ValueError("价格必须大于零")
@@ -42,7 +47,7 @@ class MarketOrder(RequestModel):
 
 
 class LimitOrder(MarketOrder):
-    price: Annotated[Decimal, BeforeValidator(price_value)]
+    price: Annotated[Decimal, BeforeValidator(price_value), WithJsonSchema({"type": "number", "exclusiveMinimum": 0})]
     time_in_force: Literal["GFD", "IOC", "FOK"] = "GFD"
 
     @field_serializer("price")

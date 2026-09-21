@@ -6,7 +6,7 @@
 
 当前镜像的 Wine 锁定版本以 [bootstrap.md](bootstrap.md) 为准。保留的历史能力不表示已在 Wine 11 上全部重测，不同环境和操作链路的耗时不能直接归因于 Wine 版本差异。
 
-正式代码已接入单账户执行器、受控原生 helper 和真实会话门禁，见 [terminal_execution.md](terminal_execution.md)。本文保留独立探针提供的能力与历史性能依据；内部业务链路已实施，REST 由集成阶段发布，不能把探针耗时或成功样本等同于正式全链路验证。
+正式代码已接入单账户执行器、受控原生 helper 和真实会话门禁，见 [terminal_execution.md](terminal_execution.md)。本文保留独立探针提供的能力与历史性能依据；内部业务链路与 [REST 接口](api.md) 已实施，不能把探针耗时或成功样本等同于正式全链路验证。
 
 | 项目 | 实测环境 |
 | --- | --- |
@@ -38,7 +38,7 @@
 | 开市/非交易状态 | 原生查询已取得 RM 等品种、RM701 等合约及六个交易所的收盘值；未知标的返回空 | 私有接口依赖固定版本；开盘切换、夜盘品种差异及断线重连刷新尚未验证，见 [trading_status.md](trading_status.md) |
 | 异常处理 | 零手本地拒绝、资金不足柜台拒绝、取消确认、资金详情关闭已有样本 | 原生日志覆盖不完整；断线、重连和提交结果未知的恢复未验证 |
 
-全项目的高性能与可靠性要求、操作优先级统一由 [project_principles.md](project_principles.md) 定义，无弹窗 CSV 主链是第一优先方案。下文保留纯键盘交易等路径的真实验证证据；具体能力仍须补齐对应业务验证，这些能力尚未接入正式 REST 业务接口。
+全项目的高性能与可靠性要求、操作优先级统一由 [project_principles.md](project_principles.md) 定义，无弹窗 CSV 主链是第一优先方案。下文保留纯键盘交易等路径的真实验证证据；REST 采用其中已经选定的路径，正式 API 的完整业务验证仍需补齐。
 
 ## 已验证的键盘上下文
 
@@ -188,7 +188,7 @@ Home → Shift+End → 输入 2352（限价）→ Tab → Space
 
 ## 开市与非交易状态
 
-现选定路径为已登录快期进程内的 `Product_Status` / `Instrument_Status` 原生查询；交易所状态只用于对应范围或辅助核对，不替代品种状态。函数身份、枚举、版本约束与当前验证边界见 [trading_status.md](trading_status.md)。该路径无需 CSV、按键、鼠标悬停或图像识别，尚未接入正式 REST。
+现选定路径为已登录快期进程内的 `Product_Status` / `Instrument_Status` 原生查询；交易所状态只用于对应范围或辅助核对，不替代品种状态。函数身份、枚举、版本约束与当前验证边界见 [trading_status.md](trading_status.md)。该路径无需 CSV、按键、鼠标悬停或图像识别，已接入 fetch_trading_status。
 
 状态栏历史探针曾在固定主题中把蓝色映射为 trading、红色映射为 non_trading，在两颗连接指示均绿色时汇总六个交易所，另有 mixed/unknown；已观察交易时段与午休颜色变化。这是显示诊断基线，不作为新状态查询的业务来源或失败回退。
 

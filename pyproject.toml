@@ -12,7 +12,6 @@ dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ty>=0.0.1"]
 package = false
 
 [tool.ty.environment]
-python = "/opt/venv"
 python-version = "3.11"
 
 [tool.ty.src]

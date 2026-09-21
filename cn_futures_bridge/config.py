@@ -46,7 +46,7 @@ class AccountConfig(ConfigModel):
 
 class ApiConfig(ConfigModel):
     host: Annotated[str, Field(min_length=1)] = "0.0.0.0"
-    port: Port = 8000
+    port: Port = 45173
 
 
 class DesktopConfig(ConfigModel):
@@ -56,8 +56,8 @@ class DesktopConfig(ConfigModel):
 
 
 class VncConfig(ConfigModel):
-    port: Port = 5900
-    web_port: Port = 6080
+    port: Port = 45174
+    web_port: Port = 45175
 
 
 class ExecutionConfig(ConfigModel):

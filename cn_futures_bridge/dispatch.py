@@ -32,6 +32,7 @@ class Job:
     future: Future[Reply] = field(default_factory=Future)
     started: bool = False
     queued_at: float = field(default_factory=time.monotonic)
+    cancelled: threading.Event = field(default_factory=threading.Event)
 
 
 class Dispatcher:
@@ -58,11 +59,14 @@ class Dispatcher:
     def start(self) -> None:
         self.thread.start()
 
-    def submit(self, request_id: str, operation: Operation, key: str | None) -> Job | Reply:
+    def submit(self, request_id: str, operation: Operation, key: str | None,
+               cancelled: threading.Event | None = None) -> Job | Reply:
         request = operation.request()
         validate_capability(request)
         write = operation.action in WRITE_ACTIONS
         with self.condition:
+            if cancelled and cancelled.is_set():
+                raise BridgeError("REQUEST_CANCELLED", "请求在准入前已断开，尚未执行", 499)
             replay = self.journal.lookup(operation, key) if write else None
             if replay:
                 LOG.info("重放既有逻辑请求 %s", replay.request_id, extra={"request_id": request_id, "event": "replay"})
@@ -78,6 +82,8 @@ class Dispatcher:
                 if existing:
                     return existing
             job = Job(request_id, operation, time.monotonic()+self.settings.execution.queue_timeout_ms/1000)
+            if cancelled is not None:
+                job.cancelled = cancelled
             self.queue.append(job)
             LOG.info("请求入队", extra={"request_id": request_id, "action": operation.action, "step": "queue", "event": "start"})
             self.condition.notify_all()
@@ -189,7 +195,9 @@ class Dispatcher:
                 if self.stopping or self.failed:
                     break
                 for item in list(self.queue):
-                    if time.monotonic() > item.deadline:
+                    if item.cancelled.is_set():
+                        self.cancel(item)
+                    elif time.monotonic() > item.deadline:
                         self.cancel(item, timeout=True)
                 resume = self.resume_future
                 if resume:

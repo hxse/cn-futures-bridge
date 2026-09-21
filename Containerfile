@@ -73,7 +73,7 @@ COPY cn_futures_bridge ./cn_futures_bridge
 COPY pyproject.toml ./
 COPY container/fonts.reg container/openbox.xml ./container/
 COPY config.example.toml /etc/cn-futures-bridge/config.toml
-EXPOSE 8000
+EXPOSE 45173
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python3", "-m", "cn_futures_bridge", "--config", "/etc/cn-futures-bridge/config.toml"]
@@ -88,4 +88,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-upgrade x1
 COPY --from=vnc-assets /opt/novnc-assets/usr/share/novnc /usr/share/novnc
 COPY --from=vnc-assets /opt/novnc-assets/usr/share/doc/novnc /usr/share/doc/novnc
 USER bridge
-EXPOSE 5900 6080
+EXPOSE 45174 45175

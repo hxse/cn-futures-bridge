@@ -12,7 +12,8 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
-from .errors import BridgeError, ErrorDetail, FieldProblem, ServiceStatus
+from .errors import BridgeError, FieldProblem, ServiceStatus
+from .routes import business_router
 from .service import BridgeService
 
 LOG = logging.getLogger(__name__)
@@ -33,13 +34,26 @@ def create_app(service: BridgeService, *, manage_lifecycle: bool = True) -> Fast
             if manage_lifecycle:
                 await run_in_threadpool(service.stop)
 
-    app = FastAPI(title="cn-futures-bridge", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="cn-futures-bridge", version="0.1.0", lifespan=lifespan,
+        description="单账户 SimNow 终端桥接。输入尽量对齐 CTP 路由，返回使用 CFB 模型。"
+                    "submitted 仅表示本地提交；通过订单和成交查询确认后续结果。HTTP 无鉴权，仅在本机发布。")
+    app.include_router(business_router(service))
 
     @app.middleware("http")
     async def trace(request: Request, call_next: RequestResponseEndpoint) -> Response:
         request.state.request_id = "cfb-" + uuid.uuid4().hex
         start = time.monotonic()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            LOG.error("HTTP 未预期异常：%s", type(exc).__name__, extra={"request_id": request_id(request)})
+            effect = getattr(request.state, "submission_status", None)
+            job = getattr(request.state, "operation_job", None)
+            if effect is None and job and job.started and job.operation.action.startswith(("create_", "cancel_")):
+                effect = "unknown"
+            error = BridgeError("INTERNAL_ERROR", "请求处理异常，查看追踪日志", 500,
+                                submission_status=effect, order_id=getattr(request.state, "order_id", None))
+            response = JSONResponse(status_code=500, content=error.response(request_id(request)).model_dump())
         response.headers["X-Request-ID"] = request_id(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
