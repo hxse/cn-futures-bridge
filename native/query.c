@@ -31,6 +31,7 @@ static int has_metadata(HMODULE core,int product){
 }
 
 void native_query(ProbeState *s,HWND window) {
+    if(!matches_main(s,window)){s->error=43;return;}
     HMODULE core=GetModuleHandleA("shinny_future_core.dll");
     if(!core){s->error=40;return;}
     typedef const void *(__cdecl *Find)(const char *);
@@ -58,7 +59,7 @@ void native_query(ProbeState *s,HWND window) {
         const char *date=user?day(user):"";if(!date)date="";
         int valid=strlen(date)==8;for(int i=0;valid&&i<8;i++)if(date[i]<'0'||date[i]>'9')valid=0;
         if(valid)emit(s,"%s",date);
-        emit(s,"\",\"front_id\":%ld,\"session_id\":%ld,\"status_bound\":%s}",user?front(user):0,user?session(user):0,object&&td&&md?"true":"false");
+        emit(s,"\",\"front_id\":%ld,\"session_id\":%ld,\"status_bound\":%s,\"login_generation\":%lu}",user?front(user):0,user?session(user):0,object&&td&&md?"true":"false",s->login_generation);
         return;
     }
     int product=s->action==PRODUCT;

@@ -38,10 +38,18 @@ build_images() {
         podman build --layers --target "$cfb_variant_item" -t "$cfb_prefix-$cfb_variant_item" -f Containerfile .
     done
 }
+stop_container() {
+    if podman container exists "$cfb_name"; then
+        managed
+        podman stop --time 20 "$cfb_name"
+        podman rm "$cfb_name"
+    fi
+}
 start_container() {
     variant "$1"
-    local cfb_api cfb_vnc cfb_web cfb_data
-    read -r cfb_api cfb_vnc cfb_web cfb_data < <(layout)
+    local cfb_api cfb_vnc cfb_web cfb_data cfb_signature cfb_layout
+    cfb_layout=$(layout)
+    read -r cfb_api cfb_vnc cfb_web cfb_data cfb_signature <<< "$cfb_layout"
     [[ -n "$cfb_data" ]] || { echo '无法读取配置，请先检查或 migrate-config' >&2; exit 1; }
     local cfb_target="$cfb_prefix-$1"
     if podman container exists "$cfb_name"; then
@@ -49,11 +57,16 @@ start_container() {
         local cfb_existing cfb_wanted
         cfb_existing=$(podman inspect --format '{{.Image}}' "$cfb_name")
         cfb_wanted=$(podman image inspect --format '{{.Id}}' "$cfb_target")
-        [[ "$cfb_existing" == "$cfb_wanted" ]] || { echo '镜像不同，请先 just down，再用 just run 或 just run vnc 启动' >&2; exit 1; }
+        [[ "$cfb_existing" == "$cfb_wanted" ]] || { echo '镜像不同，请使用 just restart 或 just restart vnc 重建重启' >&2; exit 1; }
+        [[ $(podman inspect --format '{{index .Config.Labels "cn-futures-bridge.identity"}}' "$cfb_name") == "$cfb_signature" ]] || {
+            echo '启动配置已改变，请使用 just restart 或 just restart vnc；不会沿用或切换旧账户' >&2; exit 1;
+        }
         [[ $(podman inspect --format '{{.State.Running}}' "$cfb_name") == true ]] || podman start "$cfb_name"
+        echo "服务已在运行，复用现有容器；API: http://127.0.0.1:$cfb_api/docs"
         return
     fi
     local -a cfb_args=(run --detach --name "$cfb_name" --label cn-futures-bridge.managed=true
+        --label "cn-futures-bridge.identity=$cfb_signature"
         --label "cn-futures-bridge.variant=$1" --userns keep-id:uid=1000,gid=1000
         --stop-timeout 20 --shm-size 256m --security-opt no-new-privileges
         --log-driver k8s-file --log-opt max-size=20mb
@@ -78,21 +91,24 @@ case "$cfb_command" in
         build_tools
         build_images "$cfb_variant"
         ;;
-    run)
+    run|restart)
         case "${1:-}" in
             '') cfb_variant=headless ;;
             vnc) cfb_variant=vnc ;;
-            *) echo '启动方式：just run 或 just run vnc' >&2; exit 2 ;;
+            *) echo "使用 just $cfb_command 或 just $cfb_command vnc" >&2; exit 2 ;;
         esac
         build_tools
         workspace_op init-config
         layout > /dev/null
         build_images "$cfb_variant"
+        if [[ "$cfb_command" == restart ]]; then
+            # 构建期间配置可能被编辑，停止旧实例前再次校验。
+            layout > /dev/null
+            stop_container
+        fi
         start_container "$cfb_variant"
         ;;
-    down)
-        if podman container exists "$cfb_name"; then managed; podman stop --time 20 "$cfb_name"; podman rm "$cfb_name"; fi
-        ;;
+    down) stop_container ;;
     status|logs|pause|resume)
         managed
         podman exec "$cfb_name" python -m cn_futures_bridge.ops "$cfb_command"
@@ -111,7 +127,8 @@ case "$cfb_command" in
             podman exec "$cfb_name" python -m cn_futures_bridge.ops clean
         else
             build_tools
-            read -r cfb_api cfb_vnc cfb_web cfb_data < <(layout)
+            cfb_layout=$(layout)
+            read -r cfb_api cfb_vnc cfb_web cfb_data cfb_signature <<< "$cfb_layout"
             [[ -n "$cfb_data" ]]
             podman run --rm --network=none --userns keep-id:uid=1000,gid=1000 --user 1000:1000 \
                 -v "$cfb_root/config.toml:/etc/cn-futures-bridge/config.toml:ro" \

@@ -58,6 +58,9 @@ def initial_capabilities() -> dict[str, Capability]:
 
 class ServiceStatus(BaseModel):
     environment: str = "simnow"
+    request_mode: Literal["sandbox", "live"] = "sandbox"
+    broker_id: str = "9999"
+    site: str = "电信2"
     stage: str = "terminal_bootstrap"
     state: str = "starting"
     terminal_version: str | None = None

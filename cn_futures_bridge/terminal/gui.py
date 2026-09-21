@@ -25,6 +25,7 @@ class Gui:
         self.interval = settings.execution.poll_interval_ms / 1000
         self.gap = settings.execution.gui_action_gap_ms / 1000
         self.touched = False
+        self.titles = settings.profile.titles(settings.site)
 
     def _xdo(self, *args: str) -> str:
         try:
@@ -36,7 +37,7 @@ class Gui:
 
     def activate(self, title: str | None = None) -> None:
         self.touched = True
-        pattern = "快期2-CTP-上期技术-" if title is None else "^" + re.escape(title) + "$"
+        pattern = "(" + "|".join(re.escape(value) for value in self.titles) + ")$" if title is None else "^" + re.escape(title) + "$"
         matches = self._xdo("search", "--all", "--onlyvisible", "--name", pattern).splitlines()
         if len(matches) != 1:
             raise BridgeError("SERVICE_NOT_READY", "目标窗口身份不唯一")
@@ -59,9 +60,9 @@ class Gui:
 
     def main(self, snapshot: Windows | None = None) -> Window:
         snapshot = snapshot or self.native.windows()
-        matches = [w for w in snapshot.windows if w.root == w.hwnd and "快期2-CTP-上期技术-" in w.text]
+        matches = [w for w in snapshot.windows if w.root == w.hwnd and w.text.endswith(self.titles)]
         if len(matches) != 1:
-            raise BridgeError("SERVICE_NOT_READY", "未确认已登录的 SimNow 主窗口")
+            raise BridgeError("SERVICE_NOT_READY", "未确认当前环境、券商和站点的唯一主窗口")
         return matches[0]
 
     def dialogs(self, snapshot: Windows | None = None) -> list[Window]:
@@ -153,40 +154,50 @@ class Gui:
         self.finish()
         return text
 
-    def login(self) -> None:
+    def prepare_login(self) -> tuple[int, list[Window]]:
         snapshot = self.native.windows()
         login = [w for w in snapshot.windows if w.root == w.hwnd and w.text == "用户登录"]
         if len(login) != 1:
-            self.main(snapshot)
-            return
+            raise BridgeError("SERVICE_NOT_READY", "需要从新启动的登录窗口按配置登录，不接管未知已有会话")
         root = login[0].hwnd
         controls = [w for w in snapshot.windows if w.root == root and w.visible]
-        # 只选择原包中的上期技术电信2；不自动尝试其他交易环境。
-        choices = [(w, i) for w in controls if w.class_name == "ComboBox"
-                   for i, text in enumerate(w.items) if "电信2" in text]
-        if len(choices) == 1:
-            window, index = choices[0];self.native.ask(f"combo {window.hwnd} {index}")
-        elif not any("电信2" in w.text for w in controls):
-            raise BridgeError("SERVICE_NOT_READY", "登录站点未确认电信2，请通过 VNC 选择原生 SimNow 站点")
+        # 固定版本把券商和站点合为一个选项，填写凭证前须精确选中并回读。
+        allowed = tuple(f"{name}-{self.settings.site}" for name in self.settings.profile.title_names)
+        choices = [(w, i, text) for w in controls if w.class_name == "ComboBox"
+                   for i, text in enumerate(w.items) if text in allowed]
+        if len(choices) != 1:
+            raise BridgeError("SERVICE_NOT_READY", "配置的券商和站点在登录列表中不唯一")
+        window, index, expected = choices[0]
+        self.native.ask(f"combo {window.hwnd} {index}")
+        current = [w for w in self.native.windows().windows if w.hwnd == window.hwnd]
+        if len(current) != 1 or current[0].text != expected:
+            raise BridgeError("SERVICE_NOT_READY", "登录券商和站点选择未生效")
         snapshot = self.native.windows()
         controls = [w for w in snapshot.windows if w.root == root and w.visible]
-        passwords = [w for w in controls if w.password and w.class_name == "Edit"]
-        labels = [w for w in controls if w.class_name == "Static" and re.search("账号|帐号|帐户|账户|用户名", w.text)]
-        entries = [w for w in controls if w.class_name in ("Edit", "ComboBox") and not w.password]
-        candidates = [(abs(entry.rect[1]-label.rect[1])+abs(entry.rect[0]-label.rect[2]), entry)
-                      for label in labels for entry in entries
-                      if entry.rect[0] >= label.rect[2]-8 and abs(entry.rect[1]-label.rect[1]) <= 25]
-        candidates.sort(key=lambda item: item[0])
-        if len(passwords) != 1 or not candidates or (len(candidates)>1 and candidates[0][0]==candidates[1][0]):
+        return root, controls
+
+    def login(self) -> None:
+        root, controls = self.prepare_login()
+        # 账号 ComboBox 与其子 Edit 的几何距离可能相同；固定版本按原生编号定位。
+        usernames = [w for w in controls if w.id == 1473 and w.class_name == "ComboBox" and w.parent == root]
+        passwords = [w for w in controls if w.id == 7409 and w.password and w.class_name == "Edit"]
+        if len(passwords) != 1 or len(usernames) != 1:
             raise BridgeError("SERVICE_NOT_READY", "登录输入控件身份不唯一，请人工核对")
-        username = candidates[0][1]
+        username = usernames[0]
         for window, secret in ((username, self.settings.account.username), (passwords[0], self.settings.account.password)):
             value = secret.get_secret_value().encode("gb18030").hex()
             self.native.ask(f"set_text {window.hwnd} {value}")
+        verified = [w for w in self.native.windows().windows if w.hwnd == username.hwnd]
+        if len(verified) != 1 or verified[0].text != self.settings.account.username.get_secret_value():
+            raise BridgeError("SERVICE_NOT_READY", "登录账户输入未通过核对")
         buttons = [w for w in controls if w.class_name == "Button" and w.text.replace("&", "").replace(" ", "").startswith("登录")]
         if len(buttons) != 1:
             raise BridgeError("SERVICE_NOT_READY", "登录按钮身份不唯一")
         self.activate("用户登录");self.native.ask(f"focus {buttons[0].hwnd}");self.key("space")
-        self.wait(lambda: any("快期2-CTP-上期技术-电信2" in w.text for w in self.native.windows().windows),
-                  "SimNow 登录未完成，未自动重试", self.settings.bridge.startup_timeout_seconds)
+        def ready() -> bool:
+            snapshot = self.native.windows()
+            return any(w.root == w.hwnd and w.enabled and w.text.endswith(self.titles)
+                       for w in snapshot.windows) and not self.dialogs(snapshot)
+        self.wait(ready, "目标环境登录或启动确认未完成，未自动重试或更换站点",
+                  self.settings.bridge.startup_timeout_seconds)
         self.baseline()

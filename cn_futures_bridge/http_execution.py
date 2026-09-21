@@ -50,7 +50,7 @@ async def execute(service: BridgeService, request: Request, action: Action,
     LOG.info("已校验的业务参数：%s", parameters.model_dump_json(), extra={
         "request_id": str(request.state.request_id), "action": action, "step": "validate",
         "event": "end", "outcome": "ok"})
-    validate_capability(parameters)
+    validate_capability(parameters, service.settings)
     dispatcher = service.dispatcher
     if dispatcher is None:
         raise BridgeError("SERVICE_NOT_READY", "终端执行器尚未启动")

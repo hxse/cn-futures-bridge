@@ -25,7 +25,7 @@ class LogStore(logging.Handler):
         self.secrets = tuple(value for value in (
             settings.account.username.get_secret_value(), settings.account.password.get_secret_value()) if value)
         self.current = self._new_path()
-        self.terminal_logs = settings.bridge.data_dir / "terminal" / "logs"
+        self.terminal_logs = settings.terminal_dir / "logs"
         self.mutex = threading.RLock()
         self.failed = False
         self.pumps: list[threading.Thread] = []

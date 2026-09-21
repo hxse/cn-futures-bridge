@@ -3,6 +3,16 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <wchar.h>
+
+int matches_main(ProbeState *s,HWND window){
+    WCHAR title[512];GetWindowTextW(GetAncestor(window,GA_ROOT),title,512);
+    for(int i=0;i<2;i++){
+        size_t n=wcslen(s->main_titles[i]),m=wcslen(title);
+        if(n&&m>=n&&!wcscmp(title+m-n,s->main_titles[i]))return 1;
+    }
+    return 0;
+}
 
 void emit(ProbeState *s,const char *format,...) {
     size_t used=strlen(s->output),space=sizeof(s->output)-used;

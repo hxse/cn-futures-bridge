@@ -71,6 +71,7 @@ def worker_main(connection: Connection, settings: Settings, generation: str) -> 
         try:
             executor.start()
         except BridgeError as exc:
+            LOG.error("执行器启动失败：%s: %s", exc.code, exc)
             executor.fail(exc)
         except Exception as exc:
             LOG.error("执行器启动失败：%s", type(exc).__name__)

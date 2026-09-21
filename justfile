@@ -20,6 +20,10 @@ build variant="all":
 run mode="":
     bash scripts/podman.sh run {{quote(mode)}}
 
+# 构建成功后替换当前容器，保留数据卷；传 vnc 启用远程桌面。
+restart mode="":
+    bash scripts/podman.sh restart {{quote(mode)}}
+
 down:
     bash scripts/podman.sh down
 

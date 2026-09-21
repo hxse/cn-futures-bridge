@@ -19,6 +19,11 @@ int readable(const void *pointer, size_t size) {
 }
 
 static LRESULT CALLBACK ObserveDialogs(int code, WPARAM w, LPARAM l) {
+    if(code==HCBT_ACTIVATE&&state){
+        WCHAR title[128];GetWindowTextW((HWND)w,title,128);
+        if(!wcscmp(title,L"用户登录"))InterlockedIncrement((LONG *)&state->login_generation);
+        confirm_startup(state,(HWND)w);
+    }
     if (code==HCBT_CREATEWND && state) {
         WCHAR name[64];
         GetClassNameW((HWND)w,name,64);
@@ -90,6 +95,7 @@ static void handle(HWND window) {
         return;
     }
     if (!compatible()) { state->error=1; state->done=1; return; }
+    if(state->action==STARTUP_DONE){state->startup_active=0;state->done=1;return;}
     if (!cbt_hook) {
         cbt_hook=SetWindowsHookExW(WH_CBT,ObserveDialogs,self_module,GetCurrentThreadId());
         if (!cbt_hook) { state->error=2; state->win_error=GetLastError(); state->done=1; return; }
@@ -99,7 +105,7 @@ static void handle(HWND window) {
         WCHAR cls[80], title[256];
         GetClassNameW(window,cls,80);
         GetWindowTextW(GetAncestor(window,GA_ROOT),title,256);
-        if (wcscmp(cls,L"ListCtrl") || !wcsstr(title,L"快期2-CTP-上期技术-")) state->error=3;
+        if (wcscmp(cls,L"ListCtrl") || !matches_main(state,window)) state->error=3;
         else inspect(window);
     }
     if (!state->error && state->action==EXPORT) {
@@ -160,6 +166,11 @@ static void handle(HWND window) {
 __declspec(dllexport) LRESULT CALLBACK CfbHook(int code, WPARAM w, LPARAM l) {
     if (code>=0) {
         CWPSTRUCT *message=(CWPSTRUCT *)l;
+        if(state&&message->message==WM_SHOWWINDOW&&message->wParam){
+            WCHAR title[128];GetWindowTextW(message->hwnd,title,128);
+            if(!wcscmp(title,L"用户登录"))InterlockedIncrement((LONG *)&state->login_generation);
+            confirm_startup(state,message->hwnd);
+        }
         if (!probe_message) probe_message=RegisterWindowMessageW(PROBE_MESSAGE);
         if (message->message==probe_message) handle(message->hwnd);
     }

@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 import logging
 import subprocess
+import time
 
 from ..artifacts import ArtifactStore
 from ..config import Settings
@@ -34,6 +35,9 @@ class Executor:
         self.orders = OrderActions(self.gui, self.read)
         self.session: Session | None = None
         self.disconnected = False
+        self.login_generation: int | None = None
+        self.identity_lost = False
+        self.login_established = False
         self.blocked = False
         self.error: ErrorDetail | None = None
         self.login_state = "not_configured" if not settings.account.configured else "logging_in"
@@ -42,15 +46,42 @@ class Executor:
         self.native.start()
         self.native.windows()
         if not self.settings.account.configured:
+            self.gui.prepare_login()
+            self.native.complete_startup()
             return
         self.gui.login()
+        deadline = self.native.startup_deadline
+        assert deadline is not None
+        while True:
+            initial = self.native.session()
+            if self.login_generation is None:
+                self.login_generation = initial.login_generation
+            elif initial.login_generation != self.login_generation:
+                self.identity_lost = True
+                raise BridgeError("SERVICE_NOT_READY", "启动期间再次进入登录界面，停止建立账户绑定")
+            if initial.identity_match and initial.connected and initial.status_bound:
+                break
+            if time.monotonic() >= deadline:
+                raise BridgeError("SERVICE_NOT_READY", "启动时限内账户身份或交易/行情连接未就绪")
+            time.sleep(max(.1, self.settings.execution.poll_interval_ms / 1000))
+        self.login_established = True
         self.validate_session(rebind=True)
         self.gui.baseline()
+        self.native.complete_startup()
+        LOG.info("启动账户身份及交易/行情连接已核对", extra={"step": "login_ready", "event": "end"})
 
     def validate_session(self, *, rebind: bool = False) -> Session:
         if not self.settings.account.configured:
-            raise BridgeError("SERVICE_NOT_READY", "尚未配置模拟账户")
+            raise BridgeError("SERVICE_NOT_READY", "尚未配置账户")
+        if not self.login_established:
+            raise BridgeError("SERVICE_NOT_READY", "未完成按配置登录的账户核对，需要重启容器")
+        if self.identity_lost:
+            raise BridgeError("SERVICE_NOT_READY", "终端登录身份已失效，需要按配置重启容器")
         session = self.native.session()
+        if self.login_generation is not None and session.login_generation != self.login_generation:
+            self.identity_lost = True
+            self.gui.bindings.clear()
+            raise BridgeError("SERVICE_NOT_READY", "终端再次进入登录界面，停止使用旧账户缓存；请重启容器")
         if not session.status_bound or not session.connected or not session.identity_match:
             self.disconnected = True
             self.gui.bindings.clear()
@@ -61,6 +92,7 @@ class Executor:
             if not rebind or session.identity == self.session.identity:
                 raise BridgeError("SERVICE_NOT_READY", "连接或会话已改变，需要确认新会话；同身份旧缓存须重启终端")
         self.session = session
+        self.login_generation = session.login_generation
         self.disconnected = False
         self.login_state = "logged_in"
         return session
@@ -136,11 +168,11 @@ class Executor:
         value: ResultModel | None = None
         owned = False
         try:
+            request = operation.request()
+            validate_capability(request, self.settings)
             if self.blocked:
                 raise BridgeError("SERVICE_NOT_READY", "执行器已暂停，需要人工核对后恢复")
             with steps.step("prepare"):
-                request = operation.request()
-                validate_capability(request)
                 session = self.validate_session()
                 if not native_only:
                     self.gui.baseline()

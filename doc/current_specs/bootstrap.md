@@ -1,26 +1,30 @@
-# SimNow 容器运行与诊断
+# 单账户容器运行与诊断
 
 项目遵循 [项目原则](project_principles.md)。应用只在 Podman 内运行，宿主 just/bash 负责容器编排；配置、HTTP 和内部运维消息使用 Pydantic，唯一 HTTP 服务为 FastAPI/Uvicorn 单 worker。
 
 ## 终端与镜像
 
-`terminal.lock.toml` 锁定普通快期2 2.93.405.1998 的官方包及 SHA256，构建只保留原包的上期技术/9999 模拟站点，不修改其认证参数。WineHQ 11.0 的 32 位包版本锁定 `11.0.0.0~bookworm-1`；启动直接运行 q7_release.exe，先验证持久目录与镜像清单一致。
+`terminal.lock.toml` 锁定普通快期2 2.93.405.1998 的官方包及 SHA256，profiles 目录声明上期技术/9999 和 H华安期货/6020。构建分别生成只含目标券商的 simnow/huaan 种子，不修改原生站点和认证参数。WineHQ 11.0 的 32 位包版本锁定 `11.0.0.0~bookworm-1`；启动直接运行 q7_release.exe，先验证种子的环境、券商和全部程序文件哈希。
 
 headless 与 vnc 共用终端、Python 依赖和业务代码；vnc 只增加远程桌面组件。两者都有 Xvfb/Openbox、截图和中文字体，1280×800/96 DPI 为默认设置。先确认显示与窗口管理器，再引导 Wine 会话、启动客户端；持久化前缀不跳过 Wine 会话引导。
 
-数据卷默认 `/data`，包含 terminal、wine、logs、artifacts，操作数据库位于 state 目录。`.session.lock` 排他锁保护整个实例；停止只处理本容器进程，保留数据卷。程序退出或启动失败不自动重登和无限重启。
+数据卷默认 `/data`，共享 logs、artifacts、state；terminal/wine 位于 sessions 下按环境、券商、站点和账户摘要隔离。摘要目录不显示凭证原文，旧 /data/terminal 和 /data/wine 保留但不自动迁移。`.session.lock` 排他锁保护整个实例；停止只处理本容器进程，保留数据卷。程序退出或启动失败不自动重登和无限重启。
 
 客户端已有独立探针能力见 [terminal_capabilities.md](terminal_capabilities.md) 和 [trading_status.md](trading_status.md)，历史探针数据不等于正式 API 全链路已经在线核验。
 
 ## 配置与入口
 
-唯一配置为 config.toml/config.example.toml，节包括 bridge、account、api、desktop、vnc、execution、logging、artifacts。未知字段和非法类型拒绝；Pydantic 对象隐藏凭证，错误不回显原值。账户为空可启动；配置账户后启动执行器，尝试一次 SimNow 电信2登录，失败不自动重试。
+唯一配置为 config.toml/config.example.toml，节包括 bridge、account、api、desktop、vnc、execution、logging、artifacts。未知字段和非法类型拒绝；Pydantic 对象隐藏凭证，错误不回显原值。bridge.environment 支持 simnow/live，默认 simnow。account.broker_id/site 在模拟环境留空时解析为 9999/电信2；live 必须明确填写 6020 和“一套”或“二套”。环境、券商、站点组合必须属于锁定目录。账户为空可启动到正确的登录站点，配置账户后仅尝试一次登录。
+
+实例只使用启动时的账户配置，不通过 API 切换。容器标签保存不包含密码的配置身份摘要；重复 run 遇到环境、账户、站点或其他启动配置变化时要求 down 后重新创建，不静默复用旧登录。密码仅在启动时读取，改密码也应重新创建实例。CLI 配置错误输出到 stderr，配置检查不再吞掉错误原因。
 
 HTTP 无鉴权，api.token 不再接受；`just migrate-config` 显式迁移并保存 0600 的 config.toml.bak，已有备份不覆盖。凭证、备份、debug 和数据不进入构建上下文。宿主端口只发布到 127.0.0.1。
 
 API、VNC、noVNC 的固定默认端口依次为 45173、45174、45175；TOML 的 `api.port`、`vnc.port`、`vnc.web_port` 可覆盖默认值。配置模型、示例、镜像 EXPOSE 和访问示例使用一致的默认值，实际容器监听及宿主映射均使用配置值。相同宿主发布地址和端口冲突时启动失败，不尝试随机端口；项目接受这一单实例限制，不增加全局容器数量锁。
 
-启动入口只有 `just run` 和 `just run vnc`：前者默认 headless，后者启用 VNC，均先准备及校验配置，再利用缓存构建对应镜像并启动。不再提供 `just up` 或 `just run headless`。辅助命令 `just build [all|headless|vnc]` 只构建，默认两种镜像。镜像与同名现有实例不符时要求显式 `just down` 后再运行对应的 run 命令，不自动停止现有实例。`CFB_CONTAINER`、`CFB_VOLUME` 可为隔离环境选择不同容器和卷名，端口仍由 TOML 指定。
+首次启动使用 `just run` 和 `just run vnc`：前者默认 headless，后者启用 VNC，均先准备及校验配置，再利用缓存构建对应镜像并启动。不再提供 `just up` 或 `just run headless`。辅助命令 `just build [all|headless|vnc]` 只构建，默认两种镜像。run 遇到镜像或启动配置与现有实例不符时报错，不自动停止现有实例。`CFB_CONTAINER`、`CFB_VOLUME` 可为隔离环境选择不同容器和卷名，端口仍由 TOML 指定。
+
+显式重建重启使用 `just restart` 或 `just restart vnc`，变体选择与 run 一致。先校验配置并利用缓存构建选定镜像，停止前再次校验配置；成功后停止、删除本项目同名容器，再沿同一启动链路创建实例。构建或配置失败不停止旧容器，不删除数据卷，不操作非受管容器。此入口可用于代码升级和已编辑配置的环境/账户切换；不会同时运行新旧实例。
 
 `just status/logs/screenshot/clean` 提供运维；pause/resume 由唯一执行器处理，先等待当前操作退出，再允许人工接管；恢复前检查账户与界面。命令通过容器内运维入口及受管实例的 Unix socket 执行；停止后的 clean 需取得目录排他锁。旧宿主 Python 入口已退出。
 
@@ -35,6 +39,8 @@ API、VNC、noVNC 的固定默认端口依次为 45173、45174、45175；TOML �
 | GET /docs、/openapi.json | FastAPI 文档与接口模型 |
 
 响应带 X-Request-ID 和 no-store，不记录请求头或凭证。桌面尚未接入执行器时 stage 为 terminal_bootstrap；接入后为 terminal_execution，状态区分登录、连接、队列、暂停和 blocked。trading_ready 要求真实身份、连接、交易日和执行权就绪；窗口可见不证明交易就绪。内部执行链路及能力边界见 [terminal_execution.md](terminal_execution.md)，八个业务路由已由 [api.md](api.md) 定义并接入同一 FastAPI 服务。
+
+状态对象的 environment/request_mode/broker_id/site 描述当前启动绑定；不显示账号密码，也不通过状态查询重新登录。实盘具有与适配范围一致的交易能力，不设强制只读模式。
 
 ## 容量与生命周期
 

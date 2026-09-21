@@ -35,7 +35,8 @@ def create_app(service: BridgeService, *, manage_lifecycle: bool = True) -> Fast
                 await run_in_threadpool(service.stop)
 
     app = FastAPI(title="cn-futures-bridge", version="0.1.0", lifespan=lifespan,
-        description="单账户 SimNow 终端桥接。输入尽量对齐 CTP 路由，返回使用 CFB 模型。"
+        description="单账户 SimNow/华安实盘终端桥接。mode 必须匹配启动环境，否则返回 409，不能自动切换。"
+                    "输入尽量对齐 CTP 路由，返回使用 CFB 模型。"
                     "submitted 仅表示本地提交；通过订单和成交查询确认后续结果。HTTP 无鉴权，仅在本机发布。")
     app.include_router(business_router(service))
 

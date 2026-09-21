@@ -62,7 +62,7 @@ class Dispatcher:
     def submit(self, request_id: str, operation: Operation, key: str | None,
                cancelled: threading.Event | None = None) -> Job | Reply:
         request = operation.request()
-        validate_capability(request)
+        validate_capability(request, self.settings)
         write = operation.action in WRITE_ACTIONS
         with self.condition:
             if cancelled and cancelled.is_set():

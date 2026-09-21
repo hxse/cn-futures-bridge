@@ -1,10 +1,13 @@
-# 调试阶段只使用 SimNow；空账户保留登录界面。
+# 默认 SimNow；空账户保留登录界面。实盘按下方注释明确选择华安站点。
 [bridge]
-environment = "simnow"
+environment = "simnow" # simnow 或 live；修改后须重新创建容器。
 data_dir = "/data"
 startup_timeout_seconds = 90
 
 [account]
+# SimNow 留空时使用 9999 / 电信2；华安 live 必须填 6020 / 一套或二套。
+broker_id = ""
+site = ""
 username = ""
 password = ""
 

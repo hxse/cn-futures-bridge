@@ -28,6 +28,10 @@ class TerminalManifest(BaseModel):
     version: str | None = None
     executable: str = "q7_release.exe"
     files: dict[str, str] = Field(default_factory=dict)
+    environment: str
+    broker_id: str
+    broker_name: str
+    sites: list[str]
 
 
 class Runtime:
@@ -38,7 +42,8 @@ class Runtime:
         self.state = "starting"
         self.error: ErrorDetail | None = None
         self.window_visible = False
-        self.manifest = TerminalManifest()
+        self.manifest = TerminalManifest(environment=settings.bridge.environment, broker_id=settings.broker_id,
+                                         broker_name=settings.profile.broker_name, sites=list(settings.profile.sites))
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.screenshot_lock = threading.Lock()
@@ -46,7 +51,7 @@ class Runtime:
         self.worker: threading.Thread | None = None
         self.logs: LogStore | None = None
         self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
-                        WINEPREFIX=str(settings.bridge.data_dir / "wine"),
+                        WINEPREFIX=str(settings.wine_prefix),
                         WINEDEBUG="-all", WINEDLLOVERRIDES="mscoree,mshtml=")
 
     def acquire(self) -> None:
@@ -89,10 +94,17 @@ class Runtime:
         raise BridgeError("STOPPING", "启动过程已停止")
 
     def _prepare_files(self, seed: Path = Path("/opt/terminal")) -> Path:
+        seed = seed / self.settings.profile_name
         self.manifest = TerminalManifest.model_validate_json((seed / "bridge-manifest.json").read_bytes())
-        target = self.settings.bridge.data_dir / "terminal"
+        if (self.manifest.environment != self.settings.bridge.environment
+                or self.manifest.broker_id != self.settings.broker_id
+                or self.manifest.broker_name != self.settings.profile.broker_name
+                or self.settings.site not in self.manifest.sites):
+            raise BridgeError("TERMINAL_CHANGED", "终端种子的环境、券商或站点不匹配")
+        self.settings.session_dir.mkdir(parents=True, exist_ok=True)
+        target = self.settings.terminal_dir
         if not target.exists():
-            with tempfile.TemporaryDirectory(dir=self.settings.bridge.data_dir) as temporary:
+            with tempfile.TemporaryDirectory(dir=self.settings.session_dir) as temporary:
                 staged = Path(temporary) / "terminal"
                 shutil.copytree(seed, staged)
                 staged.rename(target)
@@ -104,7 +116,7 @@ class Runtime:
         return target
 
     def _initialize_wine(self) -> None:
-        marker = self.settings.bridge.data_dir / "wine" / ".bridge-initialized"
+        marker = self.settings.wine_prefix / ".bridge-initialized"
         # 前缀可以持久化，Wine 的系统会话每次容器启动仍须先完成引导。
         process = self._spawn("wineboot", ["wineboot", "--init"])
         self._wait(lambda: process.poll() is not None, self.settings.bridge.startup_timeout_seconds,
@@ -186,6 +198,8 @@ class Runtime:
     def status(self) -> ServiceStatus:
         with self.lock:
             return ServiceStatus(environment=self.settings.bridge.environment,
+                                 request_mode=self.settings.request_mode, broker_id=self.settings.broker_id,
+                                 site=self.settings.site,
                                  state=self.state, terminal_version=self.manifest.version,
                                  terminal_window_visible=self.window_visible,
                                  account_configured=self.settings.account.configured,
@@ -213,7 +227,7 @@ class Runtime:
                     process.wait(timeout=3)
                 except ProcessLookupError:
                     pass
-        if (self.settings.bridge.data_dir / "wine").exists():
+        if self.settings.wine_prefix.exists():
             self._command(["wineserver", "-k"], 5)
 
     def stop(self) -> None:

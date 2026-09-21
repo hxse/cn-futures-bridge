@@ -1,10 +1,13 @@
 """唯一 TOML 配置模型；校验错误只包含字段名，不回显凭证。"""
 
 from pathlib import Path
+import hashlib
 import tomllib
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
+
+from .profiles import TerminalProfile, catalog
 
 Positive = Annotated[int, Field(gt=0)]
 Port = Annotated[int, Field(ge=1024, le=65535)]
@@ -20,7 +23,7 @@ class ConfigModel(BaseModel):
 
 
 class BridgeConfig(ConfigModel):
-    environment: Literal["simnow"] = "simnow"
+    environment: Literal["simnow", "live"] = "simnow"
     data_dir: Path = Path("/data")
     startup_timeout_seconds: Annotated[int, Field(ge=15, le=300)] = 90
 
@@ -36,6 +39,8 @@ class BridgeConfig(ConfigModel):
 
 
 class AccountConfig(ConfigModel):
+    broker_id: Annotated[str, Field(pattern=r"^[0-9]{0,10}$")] = ""
+    site: Annotated[str, Field(max_length=40)] = ""
     username: SecretStr = Field(default=SecretStr(""), repr=False)
     password: SecretStr = Field(default=SecretStr(""), repr=False)
 
@@ -104,10 +109,61 @@ class Settings(ConfigModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     artifacts: ArtifactConfig = Field(default_factory=ArtifactConfig)
 
+    @property
+    def request_mode(self) -> Literal["sandbox", "live"]:
+        return "sandbox" if self.bridge.environment == "simnow" else "live"
+
+    @property
+    def broker_id(self) -> str:
+        return self.account.broker_id or ("9999" if self.bridge.environment == "simnow" else "")
+
+    @property
+    def site(self) -> str:
+        return self.account.site or ("电信2" if self.bridge.environment == "simnow" else "")
+
+    @property
+    def profile_name(self) -> str:
+        names = [name for name, profile in catalog().items()
+                 if profile.environment == self.bridge.environment and profile.broker_id == self.broker_id]
+        if len(names) != 1:
+            raise ValueError("环境与受支持券商不匹配，live 须指定 broker_id")
+        return names[0]
+
+    @property
+    def profile(self) -> TerminalProfile:
+        return catalog()[self.profile_name]
+
+    @property
+    def session_dir(self) -> Path:
+        identity = self.site + ":" + self.account.username.get_secret_value()
+        digest = hashlib.sha256(identity.encode()).hexdigest()[:24]
+        return self.bridge.data_dir / "sessions" / f"{self.bridge.environment}-{self.broker_id}-{digest}"
+
+    @property
+    def terminal_dir(self) -> Path:
+        return self.session_dir / "terminal"
+
+    @property
+    def wine_prefix(self) -> Path:
+        return self.session_dir / "wine"
+
+    @property
+    def identity_signature(self) -> str:
+        # 标签不保存密码，也不输出摘要前的配置或账号原文。
+        value = self.model_dump_json(exclude={"account": {"password", "username"}})
+        value += ":" + self.account.username.get_secret_value()
+        return hashlib.sha256(value.encode()).hexdigest()
+
     @model_validator(mode="after")
     def distinct_ports(self) -> Self:
         if len({self.api.port, self.vnc.port, self.vnc.web_port}) != 3:
             raise ValueError("API、VNC 和 noVNC 端口必须互不相同")
+        return self
+
+    @model_validator(mode="after")
+    def selected_profile(self) -> Self:
+        if self.site not in self.profile.sites:
+            raise ValueError("必须明确选择该券商的原生站点，live 不自动选择站点")
         return self
 
 

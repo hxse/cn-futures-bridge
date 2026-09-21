@@ -4,6 +4,8 @@
 !uv.lock
 !tests/
 !tests/**
+!scripts/
+!scripts/podman.sh
 !config.example.toml
 !terminal.lock.toml
 !cn_futures_bridge/

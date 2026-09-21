@@ -19,6 +19,7 @@ RUN uv sync --frozen \
 COPY cn_futures_bridge ./cn_futures_bridge
 COPY container ./container
 COPY tests ./tests
+COPY scripts ./scripts
 COPY config.example.toml terminal.lock.toml ./
 ENV PATH="/opt/venv/bin:${PATH}" UV_OFFLINE=1
 
@@ -27,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i
     && rm -rf /var/lib/apt/lists/*
 COPY native ./native
 RUN mkdir /native && i686-w64-mingw32-gcc -Wall -Wextra -Werror -Wno-unused-parameter -O2 -static-libgcc -shared \
-    native/hook.c native/import_scope.c native/common.c native/query.c native/gui.c \
+    native/hook.c native/import_scope.c native/common.c native/query.c native/gui.c native/startup.c \
     -o /native/cfb-hook.dll -Wl,--kill-at \
     && i686-w64-mingw32-gcc -Wall -Wextra -Werror -Wno-unused-parameter -O2 -static-libgcc -municode \
     native/controller.c -o /native/cfb-controller.exe
@@ -70,7 +71,7 @@ COPY --from=native-build /native /opt/bridge/native
 ENV PATH="/opt/venv/bin:${PATH}"
 COPY --from=payload /opt/terminal /opt/terminal
 COPY cn_futures_bridge ./cn_futures_bridge
-COPY pyproject.toml ./
+COPY pyproject.toml terminal.lock.toml ./
 COPY container/fonts.reg container/openbox.xml ./container/
 COPY config.example.toml /etc/cn-futures-bridge/config.toml
 EXPOSE 45173

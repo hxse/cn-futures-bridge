@@ -25,7 +25,8 @@ class Journal:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.maximum = settings.execution.journal_max_bytes
         self.ttl = settings.execution.idempotency_ttl_hours * 3600
-        self.namespace = hashlib.sha256(("simnow:9999:" + settings.account.username.get_secret_value()).encode()).hexdigest()
+        identity = f"{settings.bridge.environment}:{settings.broker_id}:" + settings.account.username.get_secret_value()
+        self.namespace = hashlib.sha256(identity.encode()).hexdigest()
         with self._db() as db:
             db.execute("PRAGMA auto_vacuum=FULL")
             db.execute("""CREATE TABLE IF NOT EXISTS operations (
@@ -122,7 +123,8 @@ class Journal:
 
     def recover(self) -> int:
         with self._db() as db:
-            rows = db.execute("SELECT request_id,phase,effect FROM operations WHERE reply IS NULL").fetchall()
+            rows = db.execute("SELECT request_id,phase,effect FROM operations WHERE reply IS NULL AND namespace=?",
+                              (self.namespace,)).fetchall()
             for request_id, phase, effect in rows:
                 safe = phase in ("queued", "started") and effect is None
                 known = effect if effect in ("submitted", "rejected") else "unknown"
@@ -133,11 +135,13 @@ class Journal:
                 db.execute("UPDATE operations SET phase='finished',effect=?,reply=?,updated=? WHERE request_id=?",
                            (None if safe else known, reply.model_dump_json(), time.time(), request_id))
             self._prune(db)
-            return int(db.execute("SELECT COUNT(*) FROM operations WHERE effect='unknown'").fetchone()[0])
+            return int(db.execute("SELECT COUNT(*) FROM operations WHERE effect='unknown' AND namespace=?",
+                                  (self.namespace,)).fetchone()[0])
 
     def unresolved(self) -> int:
         with self._db() as db:
-            return int(db.execute("SELECT COUNT(*) FROM operations WHERE effect='unknown'").fetchone()[0])
+            return int(db.execute("SELECT COUNT(*) FROM operations WHERE effect='unknown' AND namespace=?",
+                                  (self.namespace,)).fetchone()[0])
 
     def _prune(self, db: sqlite3.Connection) -> None:
         db.execute("DELETE FROM operations WHERE phase='finished' AND (effect IS NULL OR effect!='unknown') AND updated<?",

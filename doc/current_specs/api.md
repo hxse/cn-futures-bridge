@@ -4,7 +4,7 @@
 
 FastAPI 提供三个 POST、五个 GET 业务路由，统一使用 `/cfb` 前缀。方法、名称及常用输入对齐参考 CTP 服务，返回使用 CFB 自己的必要字段，不承诺原始 CTP 结构。参考服务不是运行依赖。
 
-仅支持单账户 SimNow；`mode=live` 返回 503/SERVICE_NOT_ENABLED。HTTP 无鉴权，Podman 发布端口仅绑定宿主 127.0.0.1，默认文档入口为 http://127.0.0.1:45173/docs；完整参数、枚举和返回模型由 /openapi.json 提供。
+每个实例只支持一个启动时选定的 SimNow 或华安实盘账户。simnow 对应请求 mode=sandbox，live 对应 mode=live；不匹配返回 409/ENVIRONMENT_MISMATCH，不触发登录、切换、入队或幂等重放。HTTP 无鉴权，Podman 发布端口仅绑定宿主 127.0.0.1，默认文档入口为 http://127.0.0.1:45173/docs；完整参数、枚举和返回模型由 /openapi.json 提供。
 
 应用仅在容器内运行，使用 `just run` 启动 headless，或 `just run vnc` 启用远程桌面；两者均自动准备配置、构建和启动。配置、生命周期及容量治理见 [bootstrap.md](bootstrap.md)，内部动作、会话和复位见 [terminal_execution.md](terminal_execution.md)。
 
@@ -25,6 +25,8 @@ POST 只接受 application/json 对象；GET 使用 query。未知 JSON/query �
 
 公共默认值：mode=sandbox、hedge_flag=speculation、invest_unit_id=""、time_in_force=GFD、currency_id=CNY。交易所为 SHFE/INE/DCE/CZCE/CFFEX/GFEX；下单、撤单和状态查询必填交易所，其他查询可省略。
 
+实盘必须明确传 mode=live，省略时按 sandbox 校验并报环境不匹配。环境匹配在 HTTP、调度准入和执行器复核；实盘与模拟盘使用同一能力规则，当前限价 GFD 等基础分支不会因 live 被禁用，未核验分支仍返回 501。AI 的实盘交易测试需用户明确授权，该约束不是只读 API 权限。
+
 合约格式为 `^[A-Za-z][A-Za-z0-9]{0,79}$`，保留大小写；品种为 `^[A-Za-z][A-Za-z0-9_]{0,79}$`，同样区分大小写。执行时与终端实际标的及所属交易所精确核对，不能以自动补全或模糊匹配替代；资料未就绪与标的不匹配分别报错。
 
 side 为 buy/sell，offset 为 open/close/close_today/close_yesterday；volume 是 1～2147483647 的严格整数，拒绝 bool、数字字符串和小数。price 为正的有限 JSON number，拒绝数字字符串、NaN、Infinity；执行时核对可取得的报价步长与涨跌停，不自动改价或改手数。
@@ -39,7 +41,7 @@ trade_id 与 order_sys_id 使用相同标识规则。时间过滤为严格 HH:MM
 
 所有可执行业务请求进入同一个 FIFO，包括原生状态查询。只读诊断不等待业务队列。HTTP 等待为异步；客户端断开时取消尚未开始的队列项，已经开始的动作仍由执行器完成核对、收尾和持久化，不因 HTTP 退出释放 GUI。
 
-三个 POST 支持可选 Idempotency-Key，1～128 个非空格可见 ASCII 字符。同账户/环境中，同键同参数重放原响应和逻辑编号，同键不同参数 409，原请求尚在执行 409；无键的同参数请求仍是独立指令。未知提交不自动到期或重新发送。
+三个 POST 支持可选 Idempotency-Key，1～128 个非空格可见 ASCII 字符。同账户/环境/券商中，同键同参数重放原响应和逻辑编号，同键不同参数 409，原请求尚在执行 409；不同环境和券商的结果隔离，无键的同参数请求仍是独立指令。未知提交不自动到期或重新发送。
 
 正常本地提交且收尾确认后返回 202：
 
@@ -65,12 +67,12 @@ submitted 表示本地动作完成，不代表柜台接受或成交。导入回�
 
 | HTTP | 典型错误 |
 | --- | --- |
-| 409 | ORDER_NOT_FOUND、ORDER_IDENTITY_AMBIGUOUS、IDEMPOTENCY_CONFLICT、OPERATION_IN_PROGRESS |
+| 409 | ENVIRONMENT_MISMATCH、ORDER_NOT_FOUND、ORDER_IDENTITY_AMBIGUOUS、IDEMPOTENCY_CONFLICT、OPERATION_IN_PROGRESS |
 | 422 | INVALID_ARGUMENTS、ORDER_REJECTED |
 | 429 | QUEUE_FULL |
 | 501 | CAPABILITY_NOT_SUPPORTED |
 | 502 | TERMINAL_DATA_INVALID、OPERATION_STATUS_UNKNOWN |
-| 503 | SERVICE_NOT_ENABLED、SERVICE_NOT_READY、GUI_UNRESPONSIVE、GUI_RESET_FAILED、STORAGE_UNAVAILABLE |
+| 503 | SERVICE_NOT_READY、GUI_UNRESPONSIVE、GUI_RESET_FAILED、STORAGE_UNAVAILABLE |
 | 504 | QUEUE_TIMEOUT、QUERY_TIMEOUT |
 
 `/v1/status` 的 capabilities 区分 supported/unsupported/unverified；基础分支 supported 不代表所有附加模式可用。状态还包含 executor_state、queue_depth、active_operation_id、unresolved_operations。unknown 保留防重发记录；正常 submitted 不因尚未查询成交而成为未决故障。

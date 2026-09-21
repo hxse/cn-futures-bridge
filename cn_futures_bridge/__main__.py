@@ -12,7 +12,7 @@ from .service import BridgeService
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="SimNow 终端桥接服务")
+    parser = argparse.ArgumentParser(description="单账户期货终端桥接服务")
     parser.add_argument("--config", type=Path, default=Path("/etc/cn-futures-bridge/config.toml"))
     parser.add_argument("--check-config", action="store_true", help="只校验配置，不启动桌面")
     args = parser.parse_args()
@@ -22,7 +22,7 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 2
     if args.check_config:
-        print("配置有效：simnow")
+        print(f"配置有效：{settings.bridge.environment} / {settings.broker_id} / {settings.site}")
         return 0
     service = BridgeService(settings, vnc=Path("/opt/bridge/.vnc-enabled").exists())
     uvicorn.run(create_app(service), host=settings.api.host, port=settings.api.port,

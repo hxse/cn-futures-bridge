@@ -1,4 +1,4 @@
-"""从已校验的官方安装包提取终端，保留原生 SimNow 站点。"""
+"""从同一锁定安装包生成隔离的券商种子，保留原生站点和认证。"""
 
 import hashlib
 import json
@@ -16,25 +16,25 @@ def prepare(extracted: Path, target: Path, lock_path: Path) -> None:
     if not (source / lock["executable"]).is_file():
         raise ValueError("安装包内缺少锁定的快期2主程序")
     brokers = ET.fromstring((source / "broker.xml").read_text(encoding="gb18030"))
-    selected = [b for b in brokers if b.get("BrokerID") == lock["broker_id"]]
-    if len(selected) != 1 or selected[0].get("BrokerName") != lock["broker_name"]:
-        raise ValueError("安装包不含唯一的原生 SimNow 站点，停止构建")
-    shutil.copytree(source, target)
-    # 只缩减站点列表；不生成认证码、不改写原生服务器或委托协议。
-    for broker in list(brokers):
-        if broker is not selected[0]:
-            brokers.remove(broker)
-    ET.ElementTree(brokers).write(target / "broker.xml", encoding="gb2312", xml_declaration=True)
-    files = {
-        p.relative_to(target).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sorted(target.rglob("*")) if p.is_file()
-    }
-    manifest = {
-        "version": lock["version"], "installer_sha256": lock["sha256"],
-        "executable": lock["executable"], "broker_id": lock["broker_id"],
-        "broker_name": lock["broker_name"], "files": files,
-    }
-    (target / "bridge-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+    for name, profile in lock["profiles"].items():
+        selected = [b for b in brokers if b.get("BrokerID") == profile["broker_id"]
+                    and b.get("BrokerName") == profile["broker_name"]]
+        if len(selected) != 1:
+            raise ValueError("安装包不含唯一的目标券商，停止构建")
+        sites = [s.findtext("Name") for s in selected[0].findall("./Servers/Server")]
+        if sites != profile["sites"]:
+            raise ValueError("安装包站点与锁定目录不符，停止构建")
+        destination = target / name
+        shutil.copytree(source, destination)
+        # 只缩减券商列表，不生成认证码或改写交易/行情前置。
+        filtered = ET.Element(brokers.tag, brokers.attrib)
+        filtered.append(selected[0])
+        ET.ElementTree(filtered).write(destination / "broker.xml", encoding="gb2312", xml_declaration=True)
+        files = {p.relative_to(destination).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in sorted(destination.rglob("*")) if p.is_file()}
+        manifest = {"version": lock["version"], "installer_sha256": lock["sha256"],
+                    "executable": lock["executable"], "profile": name, **profile, "files": files}
+        (destination / "bridge-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -9,8 +9,12 @@ LEGACY_NAMES = {"terminal.log", "wineboot.log", "xvfb.log", "openbox.log", "vnc.
 
 def closed_logs(root: Path, terminal: Path) -> tuple[list[Path], list[Path]]:
     candidates = [p for p in root.glob("*.log") if p.name in LEGACY_NAMES]
-    if not terminal.is_symlink():
-        candidates.extend(p for p in terminal.glob("*.log") if TERMINAL_LOG.fullmatch(p.name))
+    directories = {terminal, root.parent / "terminal" / "logs"}
+    directories.update((root.parent / "sessions").glob("*/terminal/logs"))
+    for directory in directories:
+        if directory.is_symlink() or not directory.resolve().is_relative_to(root.parent.resolve()):
+            continue
+        candidates.extend(p for p in directory.glob("*.log") if TERMINAL_LOG.fullmatch(p.name))
     candidates = [p for p in candidates if p.is_file() and not p.is_symlink()]
     if not candidates:
         return [], []

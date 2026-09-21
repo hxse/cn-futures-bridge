@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 import time
@@ -117,7 +118,8 @@ def main() -> int:
             return 0
         settings = load_settings(args.config)
         if args.command == "layout":
-            print(settings.api.port, settings.vnc.port, settings.vnc.web_port, settings.bridge.data_dir)
+            print(settings.api.port, settings.vnc.port, settings.vnc.web_port,
+                  settings.bridge.data_dir, settings.identity_signature)
         elif args.command == "status":
             print(http(settings, "/v1/status").decode())
         elif args.command == "logs":
@@ -135,9 +137,12 @@ def main() -> int:
         else:
             print(json.dumps(request_control(settings.bridge.data_dir / "control.sock", args.command),
                              ensure_ascii=False))
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except (OSError, ValueError, BridgeError):
         # TOML/HTTP/模型异常可能携带敏感输入，不打印原始异常。
-        print("操作失败，请检查配置、迁移备份、容器状态和受管日志")
+        print("操作失败，请检查配置、迁移备份、容器状态和受管日志", file=sys.stderr)
         return 1
     return 0
 

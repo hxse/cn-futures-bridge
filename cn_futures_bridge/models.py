@@ -33,7 +33,7 @@ def price_value(value: object) -> Decimal:
 
 class RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
-    mode: Literal["sandbox", "live"] = "sandbox"
+    mode: Literal["sandbox", "live"] = Field(default="sandbox", description="必须匹配启动环境；实盘须显式传 live，不触发账户切换。")
 
 
 class MarketOrder(RequestModel):

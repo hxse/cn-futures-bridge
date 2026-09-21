@@ -36,7 +36,7 @@ def test_eight_routes_and_validation_before_execution() -> None:
                 result = await client.get("/cfb/fetch_positions?"+suffix)
                 assert result.status_code == 422 and result.json()["error"]["code"] == "INVALID_ARGUMENTS"
             live = await client.get("/cfb/fetch_balance?mode=live")
-            assert live.status_code == 503 and live.json()["error"]["code"] == "SERVICE_NOT_ENABLED"
+            assert live.status_code == 409 and live.json()["error"]["code"] == "ENVIRONMENT_MISMATCH"
             unsupported = await client.post("/cfb/create_limit_order", json={**order, "time_in_force": "IOC"})
             assert unsupported.status_code == 501 and unsupported.json()["error"]["code"] == "CAPABILITY_NOT_SUPPORTED"
             mixed = await client.post("/cfb/cancel_order", json={"exchange_id": "CZCE", "instrument_id": "RM701",

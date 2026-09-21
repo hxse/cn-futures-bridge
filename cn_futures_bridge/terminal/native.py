@@ -1,6 +1,7 @@
 """常驻 Wine 控制器的有界通信，超时后保持失效状态，禁止继续派发。"""
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 import select
@@ -12,6 +13,8 @@ from pydantic import BaseModel, Field, JsonValue
 from ..config import Settings
 from ..errors import BridgeError
 from ..logging_store import LogStore
+
+LOG = logging.getLogger(__name__)
 
 HASHES = {
     "q7_release.exe": "77508f5729b74db4bdaa586bc6c354e71fad29ad8d1250cced3c5c7293a7eca9",
@@ -40,6 +43,9 @@ class NativeReply(BaseModel):
     selected_count: int = 0
     row_count: int = 0
     message_hex: str = ""
+    startup_privacy_count: int = 0
+    startup_terms_count: int = 0
+    startup_wizard_count: int = 0
 
 
 class Window(BaseModel):
@@ -80,6 +86,7 @@ class Session(BaseModel):
     front_id: int
     session_id: int
     status_bound: bool
+    login_generation: int
 
     @property
     def identity(self) -> tuple[int, int, str]:
@@ -109,20 +116,25 @@ class NativeClient:
         self.process: subprocess.Popen[bytes] | None = None
         self.poisoned = False
         self.buffer = b""
+        self.startup_counts = (0, 0, 0)
+        self.startup_deadline: float | None = None
         self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
-                        WINEPREFIX=str(settings.bridge.data_dir / "wine"), WINEDEBUG="-all",
+                        WINEPREFIX=str(settings.wine_prefix), WINEDEBUG="-all",
                         WINEDLLOVERRIDES="mscoree,mshtml=")
         self.timeout = settings.execution.step_timeout_ms / 1000 + .5
 
     def start(self) -> None:
         for name, expected in HASHES.items():
-            path = self.settings.bridge.data_dir / "terminal" / name
+            path = self.settings.terminal_dir / name
             if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 raise BridgeError("SERVICE_NOT_READY", "固定终端或核心 DLL 校验失败")
         artifact_root = self.windows_path(self.settings.bridge.data_dir / "artifacts") + "\\"
+        titles = self.settings.profile.titles(self.settings.site)
+        self.startup_deadline = time.monotonic() + self.settings.bridge.startup_timeout_seconds
         self.process = subprocess.Popen(
             ["wine", "/opt/bridge/native/cfb-controller.exe", "Z:\\opt\\bridge\\native\\cfb-hook.dll",
-             artifact_root, str(self.settings.execution.step_timeout_ms)],
+             artifact_root, str(self.settings.execution.step_timeout_ms), titles[0], titles[-1],
+             str(self.settings.bridge.startup_timeout_seconds * 1000)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=self.env, start_new_session=True)
         assert self.process.stderr is not None
@@ -174,14 +186,25 @@ class NativeClient:
         try:
             process.stdin.write((command + "\n").encode("gb18030"))
             process.stdin.flush()
-            result = NativeReply.model_validate_json(self._read(self.timeout))
+            timeout = self.timeout
+            if command == "windows" and self.startup_deadline is not None:
+                timeout = max(timeout, self.startup_deadline - time.monotonic() + 1)
+            result = NativeReply.model_validate_json(self._read(timeout))
         except (OSError, ValueError) as exc:
             self.poisoned = True
             raise BridgeError("GUI_UNRESPONSIVE", "原生通信失效，暂停执行") from exc
+        counts = (result.startup_privacy_count, result.startup_terms_count, result.startup_wizard_count)
+        for name, current, previous in zip(("确认隐私政策", "确认软件使用协议", "跳过快速配置向导"), counts, self.startup_counts):
+            if current > previous:
+                LOG.info("已自动处理启动窗口：%s，累计 %s 次", name, current,
+                         extra={"step": "startup_confirmation", "event": "confirmed"})
+        self.startup_counts = counts
+        if result.error:
+            LOG.error("原生调用失败：动作=%s，代码=%s", command.split(" ", 1)[0], result.error)
         if not result.done or result.error == 90:
             self.poisoned = True
             raise BridgeError("GUI_UNRESPONSIVE", "GUI 调用尚未确认结束，暂停执行")
-        if result.error in (1, 40):
+        if result.error in (1, 40, 43):
             raise BridgeError("SERVICE_NOT_READY", f"固定版本或必需原生符号未就绪，代码 {result.error}")
         if result.error:
             raise BridgeError("TERMINAL_DATA_INVALID", f"原生适配拒绝操作，代码 {result.error}", 502)
@@ -189,6 +212,10 @@ class NativeClient:
 
     def windows(self) -> Windows:
         return Windows.model_validate(self.ask("windows").data)
+
+    def complete_startup(self) -> None:
+        self.ask("startup_done")
+        self.startup_deadline = None
 
     def session(self) -> Session:
         return Session.model_validate(self.ask("session " + self.settings.account.username.get_secret_value()).data)

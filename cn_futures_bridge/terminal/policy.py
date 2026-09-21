@@ -1,5 +1,6 @@
 """能力边界在入队前和执行前复核，未核验模式不以近似交易代替。"""
 
+from ..config import Settings
 from ..errors import BridgeError, Capability, initial_capabilities
 from ..models import BalanceQuery, CancelBySession, LimitOrder, MarketOrder, RequestModel
 
@@ -16,9 +17,10 @@ def capabilities() -> dict[str, Capability]:
     return result
 
 
-def validate_capability(request: RequestModel) -> None:
-    if request.mode != "sandbox":
-        raise BridgeError("SERVICE_NOT_ENABLED", "本服务只启用 SimNow 模拟环境")
+def validate_capability(request: RequestModel, settings: Settings) -> None:
+    if request.mode != settings.request_mode:
+        raise BridgeError("ENVIRONMENT_MISMATCH",
+                          f"请求环境为 {request.mode}，当前启动环境为 {settings.request_mode}；不会自动切换", 409)
     if getattr(request, "invest_unit_id", ""):
         raise BridgeError("CAPABILITY_NOT_SUPPORTED", "终端不能可靠区分投资单元", 501)
     if isinstance(request, BalanceQuery) and request.currency_id != "CNY":
