@@ -1,9 +1,12 @@
 """独立 GUI 进程与有界 JSON IPC，不把 HTTP 的取消传播成 GUI 解锁。"""
 
 import logging
+import multiprocessing
 from multiprocessing.connection import Connection
+from multiprocessing.process import BaseProcess
 import time
 from typing import Literal
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -73,6 +76,7 @@ def worker_main(connection: Connection, settings: Settings, generation: str) -> 
         except BridgeError as exc:
             LOG.error("执行器启动失败：%s: %s", exc.code, exc)
             executor.fail(exc)
+            executor.failure_evidence(exc)
         except Exception as exc:
             LOG.error("执行器启动失败：%s", type(exc).__name__)
             executor.fail(BridgeError("SERVICE_NOT_READY", "执行器启动失败，未自动重试"))
@@ -103,6 +107,7 @@ def worker_main(connection: Connection, settings: Settings, generation: str) -> 
             except BridgeError as exc:
                 if command.kind != "execute" or exc.code == "STORAGE_UNAVAILABLE":
                     executor.fail(exc)
+                    executor.failure_evidence(exc)
                 reply = error_reply(command.request_id, exc, blocked=executor.blocked)
             send(connection, generation, command.request_id, executor, reply)
     except (EOFError, OSError, ValueError, BridgeError):
@@ -115,3 +120,65 @@ def worker_main(connection: Connection, settings: Settings, generation: str) -> 
             except Exception:
                 LOG.error("原生控制器未能正常退出")
         connection.close()
+
+
+class WorkerProcess:
+    """同一 GUI owner 的进程和 IPC；退出确认之前不允许创建新代次。"""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.generation = ""
+        self.connection: Connection | None = None
+        self.process: BaseProcess | None = None
+
+    def start(self) -> Message:
+        if self.process is not None or self.connection is not None:
+            raise BridgeError("GUI_UNRESPONSIVE", "旧执行器尚未回收，不能启动新 owner")
+        self.generation = uuid.uuid4().hex
+        context = multiprocessing.get_context("spawn")
+        self.connection, child = context.Pipe()
+        self.process = context.Process(target=worker_main, args=(child, self.settings, self.generation), name="cfb-gui")
+        try:
+            self.process.start()
+        finally:
+            child.close()
+        return self.receive("startup", self.settings.bridge.startup_timeout_seconds+15)
+
+    def command(self, kind: str) -> Command:
+        return Command.model_validate({"generation": self.generation, "kind": kind, "request_id": uuid.uuid4().hex})
+
+    def exchange(self, command: Command, timeout: float) -> Message:
+        if self.connection is None:
+            raise BridgeError("GUI_UNRESPONSIVE", "执行器通信未建立")
+        self.connection.send_bytes(command.model_dump_json().encode())
+        return self.receive(command.request_id, timeout)
+
+    def receive(self, request_id: str, timeout: float) -> Message:
+        connection = self.connection
+        if connection is None or not connection.poll(timeout):
+            raise BridgeError("GUI_UNRESPONSIVE", "执行器未在期限内响应，旧执行权保留隔离")
+        message = Message.model_validate_json(connection.recv_bytes(MAX_REPLY_BYTES))
+        if message.generation != self.generation or message.request_id != request_id:
+            raise BridgeError("GUI_UNRESPONSIVE", "执行器返回旧代次或错误操作编号")
+        return message
+
+    def stop(self) -> None:
+        self.exchange(self.command("stop"), self.settings.execution.step_timeout_ms/1000+5)
+        if self.process:
+            self.process.join(timeout=3)
+            if self.process.is_alive():
+                raise BridgeError("GUI_UNRESPONSIVE", "旧执行器尚未退出，停止自动重连")
+            self.process.close()
+            self.process = None
+        if self.connection:
+            self.connection.close()
+            self.connection = None
+        LOG.info("GUI 执行器及控制器已退出", extra={"step": "worker_stop", "event": "end"})
+
+    def terminate_after_desktop(self) -> None:
+        # 仅在专属 Wine 会话停止之后调用，不以终止 Python 冒充 GUI 执行权释放。
+        if self.process and self.process.is_alive():
+            self.process.terminate()
+            self.process.join(timeout=3)
+        if self.connection:
+            self.connection.close()

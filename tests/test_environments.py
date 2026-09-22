@@ -10,7 +10,7 @@ from pydantic import SecretStr, ValidationError
 import pytest
 
 from cn_futures_bridge.api import create_app
-from cn_futures_bridge.config import AccountConfig, BridgeConfig, Settings
+from cn_futures_bridge.config import AccountConfig, AccountsConfig, BridgeConfig, Settings
 from cn_futures_bridge.journal import Journal
 from cn_futures_bridge.logging_store import LogStore
 from cn_futures_bridge.models import Operation
@@ -22,8 +22,9 @@ from cn_futures_bridge.terminal.native import Session, Windows
 
 
 def live_settings(directory: Path) -> Settings:
-    return Settings(bridge=BridgeConfig(environment="live", data_dir=directory),
-                    account=AccountConfig(broker_id="6020", site="一套", username=SecretStr("sample-account")))
+    return Settings(bridge=BridgeConfig(mode="live", data_dir=directory),
+                    accounts=AccountsConfig(live=AccountConfig(broker_id="6020", site="一套",
+                        username=SecretStr("sample-account"), password=SecretStr("sample-password"))))
 
 
 def test_environment_matches_before_readiness_and_live_is_not_read_only(tmp_path: Path) -> None:
@@ -51,16 +52,18 @@ def test_environment_matches_before_readiness_and_live_is_not_read_only(tmp_path
 
 
 def test_profiles_and_idempotency_are_isolated(tmp_path: Path) -> None:
-    simnow = Settings(bridge=BridgeConfig(data_dir=tmp_path), account=AccountConfig(username=SecretStr("sample-account")))
+    simnow = Settings(bridge=BridgeConfig(data_dir=tmp_path), accounts=AccountsConfig(sandbox=AccountConfig(
+        username=SecretStr("sample-account"), password=SecretStr("sample-password"))))
     live = live_settings(tmp_path)
     assert (simnow.broker_id, simnow.site, simnow.request_mode) == ("9999", "电信2", "sandbox")
     assert live.terminal_dir != simnow.terminal_dir and live.wine_prefix != simnow.wine_prefix
     assert "sample-account" not in str(live.session_dir)
-    other = Settings(bridge=live.bridge, account=AccountConfig(broker_id="6020", site="一套", username=SecretStr("second-account")))
+    other = Settings(bridge=live.bridge, accounts=AccountsConfig(live=AccountConfig(broker_id="6020", site="一套",
+        username=SecretStr("second-account"), password=SecretStr("second-password"))))
     assert other.identity_signature != live.identity_signature
     for account in (AccountConfig(), AccountConfig(broker_id="9999", site="电信2"), AccountConfig(broker_id="6020", site="不存在")):
         with pytest.raises(ValidationError):
-            Settings(bridge=live.bridge, account=account)
+            Settings(bridge=live.bridge, accounts=AccountsConfig(live=account))
     params = {"exchange_id": "CZCE", "instrument_id": "RM701", "side": "buy", "offset": "open", "volume": 1, "price": 2323}
     simulation = Operation(action="create_limit_order", parameters=params)
     real = Operation(action=simulation.action, parameters={**params, "mode": "live"})
@@ -80,7 +83,8 @@ def test_profiles_and_idempotency_are_isolated(tmp_path: Path) -> None:
 def test_login_waits_for_identity_and_rejects_new_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for changed in (False, True):
         settings = Settings(bridge=BridgeConfig(data_dir=tmp_path / str(changed)),
-                            account=AccountConfig(username=SecretStr("sample"), password=SecretStr("sample-password")))
+                            accounts=AccountsConfig(sandbox=AccountConfig(
+                                username=SecretStr("sample"), password=SecretStr("sample-password"))))
         executor = Executor(settings, LogStore(settings), Journal(settings))
         pending = Session(connected=False, trade_connected=False, market_connected=True, identity_match=False,
                           trading_day="", front_id=0, session_id=0, status_bound=True, login_generation=0)

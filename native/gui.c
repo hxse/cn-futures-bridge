@@ -41,13 +41,21 @@ static BOOL CALLBACK child(HWND w,LPARAM unused){add_window(w);return active->er
 static BOOL CALLBACK top(HWND w,LPARAM unused){
     DWORD pid;GetWindowThreadProcessId(w,&pid);
     if(pid==active->pid&&IsWindowVisible(w)){
-        if(confirm_document(active,w,active->action==SETTLEMENT_WINDOWS||active->action==STARTUP_DONE))document_pending=1;
+        if(confirm_document(active,w,active->action==MANAGED_WINDOWS||active->action==STARTUP_DONE))document_pending=1;
         add_window(w);EnumChildWindows(w,child,0);
     }
     return active->error!=30;
 }
 void gui_query(ProbeState *s,HWND window){
-    if(s->action==WINDOWS||s->action==STARTUP_DONE||s->action==SETTLEMENT_WINDOWS){
+    if(s->action==WINDOWS||s->action==STARTUP_DONE||s->action==MANAGED_WINDOWS){
+        if(s->trade_notice_window&&!IsWindowVisible((HWND)(uintptr_t)s->trade_notice_window)){
+            if(s->trade_notice_phase==3)s->trade_notice_closed_count++;
+            s->trade_notice_window=0;s->trade_notice_phase=0;
+        }
+        /* 附属网页可能只隐藏并复用句柄；观察到关闭后结束本轮去重。 */
+        if(s->startup_last_kind==5&&!IsWindowVisible((HWND)(uintptr_t)s->startup_last_window)){
+            s->startup_last_window=0;s->startup_last_kind=0;
+        }
         active=s;count=0;document_pending=0;emit(s,"{\"windows\":[");EnumWindows(top,0);
         GUITHREADINFO info={0};info.cbSize=sizeof(info);GetGUIThreadInfo(GetCurrentThreadId(),&info);
         emit(s,"],\"focus\":%lu,\"flags\":%lu,\"document_pending\":%s}",

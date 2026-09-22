@@ -8,16 +8,15 @@ import json
 import os
 import sys
 from pathlib import Path
-import tempfile
 import time
 import tomllib
 import urllib.request
 
-import tomli_w
 from pydantic import BaseModel
 
 from .artifacts import ArtifactStore
 from .config import ConfigError, Settings, load_settings
+from .config_migration import migrate
 from .control import request_control
 from .errors import BridgeError
 
@@ -34,40 +33,6 @@ def initialize(root: Path) -> None:
     with target.open("xb") as stream:
         os.fchmod(stream.fileno(), 0o600)
         stream.write((root / "config.example.toml").read_bytes())
-
-
-def migrate(root: Path) -> None:
-    target = root / "config.toml"
-    original = target.read_bytes()
-    data = tomllib.loads(original.decode())
-    if "token" not in data.get("api", {}):
-        load_settings(target)
-        print("配置无需迁移")
-        return
-    del data["api"]["token"]
-    defaults = tomllib.loads((root / "config.example.toml").read_text())
-    for name, section in defaults.items():
-        data.setdefault(name, section)
-    try:
-        Settings.model_validate(data)
-    except ValueError:
-        raise ConfigError("旧配置还包含其他无效字段，未迁移") from None
-    backup = root / "config.toml.bak"
-    with backup.open("xb") as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        stream.write(original)
-        stream.flush()
-        os.fsync(stream.fileno())
-    descriptor, name = tempfile.mkstemp(prefix="config.toml.", suffix=".tmp", dir=root)
-    try:
-        with os.fdopen(descriptor, "w") as stream:
-            stream.write(tomli_w.dumps(data))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, target)
-    finally:
-        Path(name).unlink(missing_ok=True)
-    print("配置已迁移，凭证保留；原配置备份为 config.toml.bak")
 
 
 def fetch(root: Path) -> None:

@@ -1,15 +1,8 @@
-# 默认 SimNow；空账户保留登录界面。实盘按下方注释明确选择华安站点。
+# 公共配置只维护一份；两组账号可以同时保存，每次启动只选用一组。
 [bridge]
-environment = "simnow" # simnow 或 live；修改后须重新创建容器。
+mode = "sandbox" # sandbox 或 live；切换后执行 just restart / just restart vnc。
 data_dir = "/data"
 startup_timeout_seconds = 90
-
-[account]
-# SimNow 留空时使用 9999 / 电信2；华安 live 必须填 6020 / 一套或二套。
-broker_id = ""
-site = ""
-username = ""
-password = ""
 
 [api]
 host = "0.0.0.0"
@@ -33,6 +26,10 @@ gui_action_gap_ms = 10
 idempotency_ttl_hours = 168
 journal_max_bytes = 134217728
 
+[reconnect]
+enabled = true
+interval_seconds = 600 # 每次连接失败结束后等 10 分钟再试；不切换账户或站点。
+
 [logging]
 level = "INFO"
 max_file_bytes = 20971520
@@ -42,3 +39,17 @@ max_total_bytes = 209715200
 max_total_bytes = 314572800
 cleanup_interval_seconds = 60
 min_free_bytes = 536870912
+
+# 当前模拟环境使用 SimNow；账号密码一起留空时仅启动登录界面。
+[accounts.sandbox]
+broker_id = "9999"
+site = "电信2"
+username = ""
+password = ""
+
+# 华安实盘；站点明确选择一套或二套。备用账号可以稍后填写。
+[accounts.live]
+broker_id = "6020"
+site = "一套"
+username = ""
+password = ""

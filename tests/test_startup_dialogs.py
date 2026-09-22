@@ -31,21 +31,42 @@ def test_startup_waits_for_document_but_rejects_unknown_dialog(tmp_path: Path, m
     pending, ready = desktop("确认结算单", pending=True), desktop()
     snapshots = iter([pending, ready])
     native.startup_deadline = time.monotonic() + 2
-    monkeypatch.setattr(native, "settlement_windows", lambda: next(snapshots))
+    monkeypatch.setattr(native, "managed_windows", lambda: next(snapshots))
     assert gui.baseline() == ready
     # 结算单晚于启动结束到达时，仍通过同一基线入口处理。
     native.startup_deadline = None
     snapshots = iter([pending, ready])
     assert gui.baseline() == ready
-    monkeypatch.setattr(native, "settlement_windows", lambda: desktop("确认下单"))
+    monkeypatch.setattr(native, "managed_windows", lambda: desktop("确认下单"))
     with pytest.raises(BridgeError) as error:
         gui.baseline()
     assert error.value.code == "GUI_RESET_FAILED"
     native.startup_deadline = time.monotonic() - 1
-    monkeypatch.setattr(native, "settlement_windows", lambda: pending)
+    monkeypatch.setattr(native, "managed_windows", lambda: pending)
     with pytest.raises(BridgeError) as error:
         gui.baseline()
     assert error.value.code == "QUERY_TIMEOUT"
+
+
+def test_late_information_window_waits_for_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(bridge=BridgeConfig(data_dir=tmp_path))
+    native = NativeClient(settings, LogStore(settings))
+    gui = Gui(native, settings)
+    pending, ready = desktop("保证金监控中心", pending=True), desktop()
+    snapshots = iter([pending, pending, ready])
+    commands: list[str] = []
+    def answer(command: str) -> NativeReply:
+        commands.append(command)
+        return NativeReply(error=0, done=True, information_close_count=1,
+                           data=next(snapshots).model_dump(mode="json"))
+    monkeypatch.setattr(native, "ask", answer)
+    assert native.startup_deadline is None and gui.baseline() == ready
+    assert commands == ["managed_windows"] * 3
+    # 同名但不满足原生模板的窗口不能被基线当作已经处理。
+    monkeypatch.setattr(native, "managed_windows", lambda: desktop("保证金监控中心"))
+    with pytest.raises(BridgeError) as error:
+        gui.baseline()
+    assert error.value.code == "GUI_RESET_FAILED"
 
 
 def test_startup_completion_waits_for_native_confirmation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,3 +87,27 @@ def test_startup_completion_waits_for_native_confirmation(tmp_path: Path, monkey
     with pytest.raises(BridgeError) as error:
         native.complete_startup()
     assert error.value.code == "QUERY_TIMEOUT" and native.startup_deadline is not None
+
+
+def test_trade_notice_waits_for_checkbox_and_confirmation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(bridge=BridgeConfig(data_dir=tmp_path))
+    native = NativeClient(settings, LogStore(settings))
+    gui = Gui(native, settings)
+    pending, ready = desktop("(2/2) 成交通知", pending=True), desktop()
+    replies = iter([
+        NativeReply(error=0, done=True, trade_notice_check_count=1, data=pending.model_dump(mode="json")),
+        NativeReply(error=0, done=True, trade_notice_check_count=1, trade_notice_checked_count=1,
+                    trade_notice_confirm_count=1, data=pending.model_dump(mode="json")),
+        NativeReply(error=0, done=True, trade_notice_check_count=1, trade_notice_checked_count=1,
+                    trade_notice_confirm_count=1, trade_notice_closed_count=1, data=ready.model_dump(mode="json")),
+    ])
+    commands: list[str] = []
+    def answer(command: str) -> NativeReply:
+        commands.append(command)
+        return next(replies)
+    monkeypatch.setattr(native, "ask", answer)
+    assert gui.baseline() == ready and commands == ["managed_windows"] * 3
+    monkeypatch.setattr(native, "managed_windows", lambda: desktop("确认下单"))
+    with pytest.raises(BridgeError) as error:
+        gui.baseline()
+    assert error.value.code == "GUI_RESET_FAILED"

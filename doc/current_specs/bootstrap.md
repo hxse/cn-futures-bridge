@@ -12,17 +12,42 @@ Wine 保留官方包及其必要依赖，Mono/MSHTML 仍由运行环境禁用。
 
 诊断和失败证据统一使用 `cfb-capture`，读取 X11 根窗口并通过 libpng 保存 RGB PNG，保留超时和原有容量治理；不安装 scrot。Openbox 仍依赖 Imlib2，因此其共用图像库继续保留。中文字体仍使用完整文泉驿微米黑及原有映射，不裁剪字库。
 
-数据卷默认 `/data`，共享 logs、artifacts、state；terminal/wine 位于 sessions 下按环境、券商、站点和账户摘要隔离。摘要目录不显示凭证原文，旧 /data/terminal 和 /data/wine 保留但不自动迁移。`.session.lock` 排他锁保护整个实例；停止只处理本容器进程，保留数据卷。程序退出或启动失败不自动重登和无限重启。
+数据卷默认 `/data`，共享 logs、artifacts、state；terminal/wine 位于 sessions 下按环境、券商、站点和账户摘要隔离。摘要目录不显示凭证原文，旧 /data/terminal 和 /data/wine 保留但不自动迁移。`.session.lock` 排他锁保护整个实例；停止只处理本容器进程，保留数据卷。已识别连接故障按受控流程定时恢复；进程崩溃、桌面启动失败及未知异常不盲目循环重启。
 
 客户端已有独立探针能力见 [terminal_capabilities.md](terminal_capabilities.md) 和 [trading_status.md](trading_status.md)，历史探针数据不等于正式 API 全链路已经在线核验。
 
 ## 配置与入口
 
-唯一配置为 config.toml/config.example.toml，节包括 bridge、account、api、desktop、vnc、execution、logging、artifacts。未知字段和非法类型拒绝；Pydantic 对象隐藏凭证，错误不回显原值。bridge.environment 支持 simnow/live，默认 simnow。account.broker_id/site 在模拟环境留空时解析为 9999/电信2；live 必须明确填写 6020 和“一套”或“二套”。环境、券商、站点组合必须属于锁定目录。账户为空可启动到正确的登录站点，配置账户后仅尝试一次登录。
+唯一配置为 config.toml/config.example.toml，节包括 bridge、accounts.sandbox、accounts.live，以及公共 api、desktop、vnc、execution、reconnect、logging、artifacts。bridge.mode 是唯一启动选择，默认 sandbox，只接受 sandbox/live，与 API mode 一致。两组账号可同时保存，每次启动只登录选中组。
 
-实例只使用启动时的账户配置，不通过 API 切换。容器标签保存不包含密码的配置身份摘要；重复 run 遇到环境、账户、站点或其他启动配置变化时要求 down 后重新创建，不静默复用旧登录。密码仅在启动时读取，改密码也应重新创建实例。CLI 配置错误输出到 stderr，配置检查不再吞掉错误原因。
+Pydantic 对所有分组严格校验字段名、类型和字段基本格式，只对选中组检查凭证配对及环境、券商、站点组合。选中组账号密码均空可启动登录界面，不安排重连；仅填写一项时报错。备用组可为空或待补齐，选中时再做业务完整性校验。sandbox 的空 broker_id/site 仍解析为 9999/电信2；live 必须明确填写 6020 和“一套”或“二套”。错误不回显凭证，日志过滤覆盖两组账号密码。
 
-HTTP 无鉴权，api.token 不再接受；`just migrate-config` 显式迁移并保存 0600 的 config.toml.bak，已有备份不覆盖。凭证、备份、debug 和数据不进入构建上下文。宿主端口只发布到 127.0.0.1。
+Settings.account 为派生的当前账号，不能作为配置字段输入；内部 bridge.environment 从 mode 映射为 simnow/live，用于原生 profile、session 目录和幂等 namespace。此重构不改变原数据身份或创建替代目录，业务和重连共用同一个当前账号。
+
+```toml
+[bridge]
+mode = "sandbox"
+
+[accounts.sandbox]
+broker_id = "9999"
+site = "电信2"
+username = ""
+password = ""
+
+[accounts.live]
+broker_id = "6020"
+site = "一套"
+username = ""
+password = ""
+```
+
+reconnect.enabled 默认 true；interval_seconds 为严格整数 60～86400，默认 600，计时从本次失败结束开始。可省略整个配置节；设为 false 关闭自动重连，900 表示每 15 分钟。单次登录沿用 bridge.startup_timeout_seconds。已识别连接故障由同一调度器恢复：确认旧 worker 和专属 Wine 退出，再引导新终端会话；HTTP、Xvfb/Openbox、VNC 不重启，不重建镜像。具体限制见 [terminal_execution.md](terminal_execution.md)。
+
+实例只使用启动时的配置，不通过 API 或重连切换。容器身份摘要只包含公共配置和当前账户身份，排除备用组和密码；备用组变化不影响当前实例复用。重复 run 遇到 mode、当前账户、站点或公共配置变化时要求 restart，不静默复用旧登录。密码仅在启动时读取，修改当前密码也须 restart。CLI 配置错误输出到 stderr。
+
+正常加载拒绝旧 [account]、bridge.environment 和 api.token，并提示 just migrate-config。迁移把旧账户放到原环境对应组，simnow 映射 sandbox，旧环境省略时沿用原 simnow 默认值；另一组使用示例的空凭证配置，公共自定义值保留。旧 account/environment 与新 accounts/mode 结构混用时拒绝；转换后须通过新模型校验，失败不改写。首次备份为 config.toml.bak，已有备份时改用 config.toml.<唯一编号>.bak；完整原文含注释保存在备份中，不猜测注释中的备用凭证。原子替换前核对源文件未变化，备份及新文件均为 0600；重复迁移新格式只验证，不改写或增加备份。
+
+HTTP 无鉴权。凭证、备份、debug 和数据不进入版本控制或构建上下文。宿主端口只发布到 127.0.0.1。
 
 API、VNC、noVNC 的固定默认端口依次为 45173、45174、45175；TOML 的 `api.port`、`vnc.port`、`vnc.web_port` 可覆盖默认值。配置模型、示例、镜像 EXPOSE 和访问示例使用一致的默认值，实际容器监听及宿主映射均使用配置值。相同宿主发布地址和端口冲突时启动失败，不尝试随机端口；项目接受这一单实例限制，不增加全局容器数量锁。
 
@@ -45,6 +70,8 @@ API、VNC、noVNC 的固定默认端口依次为 45173、45174、45175；TOML �
 响应带 X-Request-ID 和 no-store，不记录请求头或凭证。桌面尚未接入执行器时 stage 为 terminal_bootstrap；接入后为 terminal_execution，状态区分登录、连接、队列、暂停和 blocked。trading_ready 要求真实身份、连接、交易日和执行权就绪；窗口可见不证明交易就绪。内部执行链路及能力边界见 [terminal_execution.md](terminal_execution.md)，八个业务路由已由 [api.md](api.md) 定义并接入同一 FastAPI 服务。
 
 状态对象的 environment/request_mode/broker_id/site 描述当前启动绑定；不显示账号密码，也不通过状态查询重新登录。实盘具有与适配范围一致的交易能力，不设强制只读模式。
+
+reconnect 对象包含 enabled、interval_seconds、state、attempts、last_failure_at、last_error、next_retry_at、manual_required。state 为 idle/waiting/reconnecting/paused/manual/disabled；无账户时禁用。attempts 是本实例的自动恢复尝试次数，不含首次启动；最近失败与次数在恢复成功后保留。时间为 UTC ISO8601 或 null，定时执行使用单调时钟。暂停/停止时 next_retry_at 为 null，不代表清除原计时；恢复时期限已过可立即尝试。断线期间 healthz 仍 200，readyz 为 503，status 仍可读。
 
 ## 容量与生命周期
 

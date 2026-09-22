@@ -20,6 +20,9 @@ IdempotencyKey = Annotated[str | None, Header(alias="Idempotency-Key", min_lengt
 def business_router(service: BridgeService) -> APIRouter:
     errors: dict[int | str, dict[str, object]] = {
         code: {"model": ErrorResponse} for code in (409, 422, 429, 500, 501, 502, 503, 504)}
+    errors[503].update(description="终端未就绪或操作失败；离线请求不保留到重连后执行。",
+        headers={"Retry-After": {"description": "有自动重连计划时建议等待的秒数，不保证届时恢复。",
+                                  "schema": {"type": "integer", "minimum": 1}}})
     router = APIRouter(prefix="/cfb", tags=["cfb"], dependencies=[Depends(check_envelope)], responses=errors)
     submit_description = ("完成本地提交和界面收尾后返回 202；submitted 不代表柜台接受或成交。"
                           "请独立查询订单与成交，未知结果不要更换幂等键重发。")

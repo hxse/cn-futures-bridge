@@ -56,6 +56,17 @@ def initial_capabilities() -> dict[str, Capability]:
     return {name: "unverified" for name in CAPABILITY_NAMES}
 
 
+class ReconnectStatus(BaseModel):
+    enabled: bool = True
+    interval_seconds: int = 600
+    state: Literal["idle", "waiting", "reconnecting", "paused", "manual", "disabled"] = "idle"
+    attempts: int = 0
+    last_failure_at: str | None = None
+    last_error: ErrorDetail | None = None
+    next_retry_at: str | None = None
+    manual_required: bool = False
+
+
 class ServiceStatus(BaseModel):
     environment: str = "simnow"
     request_mode: Literal["sandbox", "live"] = "sandbox"
@@ -75,4 +86,5 @@ class ServiceStatus(BaseModel):
     queue_depth: int = 0
     active_operation_id: str | None = None
     unresolved_operations: int = 0
+    reconnect: ReconnectStatus = Field(default_factory=ReconnectStatus)
     capabilities: dict[str, Capability] = Field(default_factory=initial_capabilities)

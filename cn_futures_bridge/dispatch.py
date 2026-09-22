@@ -4,21 +4,18 @@ from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 import logging
-import multiprocessing
-from multiprocessing.connection import Connection
-from multiprocessing.process import BaseProcess
 import threading
 import time
-import uuid
 
 from .config import Settings
 from .errors import BridgeError, ErrorDetail, ServiceStatus
 from .journal import Journal, error_reply
 from .models import Operation
 from .results import Reply
+from .reconnect import ReconnectPlan
 from .runtime import Runtime
 from .terminal.policy import capabilities, validate_capability
-from .worker import Command, MAX_REPLY_BYTES, Message, WorkerState, worker_main
+from .worker import Command, Message, WorkerProcess, WorkerState
 
 LOG = logging.getLogger(__name__)
 WRITE_ACTIONS = ("create_market_order", "create_limit_order", "cancel_order")
@@ -47,9 +44,8 @@ class Dispatcher:
         self.paused = False
         self.stopping = False
         self.state = WorkerState(login_state="logging_in" if settings.account.configured else "not_configured")
-        self.generation = uuid.uuid4().hex
-        self.connection: Connection | None = None
-        self.process: BaseProcess | None = None
+        self.worker = WorkerProcess(settings)
+        self.reconnect = ReconnectPlan(settings)
         self.resume_future: Future[Reply] | None = None
         self.ready = False
         self.failed = False
@@ -121,24 +117,38 @@ class Dispatcher:
                  "outcome": reply.status})
 
     def _exchange(self, command: Command, timeout: float) -> Message:
-        if self.connection is None:
-            raise BridgeError("GUI_UNRESPONSIVE", "执行器通信未建立")
-        self.connection.send_bytes(command.model_dump_json().encode())
-        return self._receive(command.request_id, timeout)
-
-    def _receive(self, request_id: str, timeout: float) -> Message:
-        connection = self.connection
-        if connection is None or not connection.poll(timeout):
-            raise BridgeError("GUI_UNRESPONSIVE", "执行器未在期限内响应，旧执行权保留隔离")
-        message = Message.model_validate_json(connection.recv_bytes(MAX_REPLY_BYTES))
-        if message.generation != self.generation or message.request_id != request_id:
-            raise BridgeError("GUI_UNRESPONSIVE", "执行器返回旧代次或错误操作编号")
+        message = self.worker.exchange(command, timeout)
         with self.condition:
             self.state = message.state
         return message
 
-    def _command(self, kind: str) -> Command:
-        return Command.model_validate({"generation": self.generation, "kind": kind, "request_id": uuid.uuid4().hex})
+    def _start_worker(self) -> None:
+        message = self.worker.start()
+        with self.condition:
+            self.state = message.state
+            self.ready = True
+            self.condition.notify_all()
+
+    def _update_recovery(self) -> None:
+        # 在唯一调度线程及 condition 内调用；先保存当前结果，再评估重连资格。
+        base = self.runtime.status()
+        if base.error:
+            self.state.blocked = True
+            self.state.query_ready = self.state.trading_ready = False
+        if self.state.blocked or self.failed or not self.state.query_ready:
+            while self.queue:
+                job = self.queue.popleft()
+                self._finish(job, error_reply(job.request_id, BridgeError("SERVICE_NOT_READY", "连接或执行器未就绪，队列项未执行")))
+        safe = self.state.ownership_clear and not self.unresolved and not self.failed and base.error is None
+        self.reconnect.observe(base.error or self.state.error, safe=safe)
+
+    def _reconnect(self) -> None:
+        self.worker.stop()
+        if self.stopping:
+            return
+        self.runtime.restart_terminal()
+        if not self.stopping:
+            self._start_worker()
 
     def _run(self) -> None:
         try:
@@ -149,13 +159,8 @@ class Dispatcher:
                 if self.runtime.status().error or time.monotonic() > deadline:
                     raise BridgeError("SERVICE_NOT_READY", "终端桌面未就绪，执行器未启动")
                 time.sleep(.1)
-            context = multiprocessing.get_context("spawn")
-            self.connection, child = context.Pipe()
-            self.process = context.Process(target=worker_main, args=(child, self.settings, self.generation), name="cfb-gui")
-            self.process.start();child.close()
-            self._receive("startup", self.settings.bridge.startup_timeout_seconds+15)
+            self._start_worker()
             with self.condition:
-                self.ready = True
                 if self.unresolved:
                     self.paused = True
                 self.condition.notify_all()
@@ -177,6 +182,7 @@ class Dispatcher:
                         reply = error_reply(job.request_id, BridgeError("STORAGE_UNAVAILABLE", "执行器失联且操作记录不可读",
                             submission_status="unknown" if job.operation.action in WRITE_ACTIONS else None), blocked=True)
                     self._finish(job, reply)
+                self._update_recovery()
                 self.condition.notify_all()
         finally:
             with self.condition:
@@ -194,15 +200,19 @@ class Dispatcher:
             with self.condition:
                 if self.stopping or self.failed:
                     break
+                self._update_recovery()
                 for item in list(self.queue):
                     if item.cancelled.is_set():
                         self.cancel(item)
                     elif time.monotonic() > item.deadline:
                         self.cancel(item, timeout=True)
                 resume = self.resume_future
-                if resume:
-                    self.resume_future = None
-                if not resume and (self.paused or self.state.blocked or not self.queue):
+                reconnect = not resume and not self.paused and self.reconnect.due()
+                if reconnect:
+                    self.reconnect.begin()
+                    self.ready = False
+                    job = None
+                elif not resume and (self.paused or self.state.blocked or not self.queue):
                     if time.monotonic() < next_probe or self.paused or self.state.blocked:
                         self.condition.wait(.1)
                         continue
@@ -212,18 +222,21 @@ class Dispatcher:
                 else:
                     job = None
                 self.owner_busy = True
-            if resume:
-                message = self._exchange(self._command("resume"), 4*interval+5)
+            if reconnect:
+                self._reconnect()
+            elif resume:
+                message = self._exchange(self.worker.command("resume"), 4*interval+5)
                 reply = message.reply or Reply(request_id=message.request_id, body={"resumed": True})
                 with self.condition:
                     if not message.state.blocked:
                         self.paused = False
                     resume.set_result(reply)
+                    self.resume_future = None
                     self.condition.notify_all()
             elif job:
                 LOG.info("请求取得执行权", extra={"request_id": job.request_id, "action": job.operation.action,
                     "step": "queue", "event": "end", "duration_ms": (time.monotonic()-job.queued_at)*1000})
-                command = Command(generation=self.generation, request_id=job.request_id, kind="execute",
+                command = Command(generation=self.worker.generation, request_id=job.request_id, kind="execute",
                                   operation=job.operation, deadline=job.deadline)
                 message = self._exchange(command, 80*interval+10)
                 if message.reply is None:
@@ -233,13 +246,15 @@ class Dispatcher:
                     self.active = None
                     self.condition.notify_all()
             else:
-                self._exchange(self._command("probe"), 4*interval+5)
+                self._exchange(self.worker.command("probe"), 4*interval+5)
             with self.condition:
                 self.owner_busy = False
+                self._update_recovery()
                 self.condition.notify_all()
             next_probe = time.monotonic()+2
         if not self.failed:
-            self._exchange(self._command("stop"), interval+5)
+            if self.worker.connection:
+                self.worker.stop()
 
     def pause(self) -> None:
         deadline = time.monotonic()+min(25, 4*self.settings.execution.step_timeout_ms/1000+2)
@@ -255,8 +270,12 @@ class Dispatcher:
 
     def resume(self) -> Reply:
         with self.condition:
-            if not self.ready or self.failed or self.active or self.resume_future:
+            if not self.ready or self.failed or self.active or self.owner_busy or self.resume_future:
                 raise BridgeError("SERVICE_NOT_READY", "当前不能安全恢复执行")
+            if self.reconnect.deadline is not None:
+                self.paused = False
+                self.condition.notify_all()
+                return Reply(request_id="resume-reconnect", body={"resumed": True})
             self.paused = True
             future: Future[Reply] = Future()
             self.resume_future = future
@@ -268,16 +287,23 @@ class Dispatcher:
 
     def status(self, base: ServiceStatus) -> ServiceStatus:
         with self.condition:
-            state = ("stopping" if self.stopping else "blocked" if self.failed or self.state.blocked
-                     else "starting" if not self.ready else "running" if self.active else "paused" if self.paused else "idle")
+            state = ("stopping" if self.stopping else "paused" if self.paused
+                     else "reconnecting" if self.reconnect.status.state == "reconnecting"
+                     else "blocked" if self.failed or self.state.blocked
+                     else "starting" if not self.ready else "running" if self.active else "idle")
             available = state in ("idle", "running") and base.error is None
             return base.model_copy(update={"stage": "terminal_execution", "executor_state": state,
                 "login_state": self.state.login_state, "queue_depth": len(self.queue),
                 "active_operation_id": self.active.request_id if self.active else None,
                 "unresolved_operations": self.unresolved, "capabilities": capabilities(),
+                "reconnect": self.reconnect.snapshot(paused=self.paused or self.stopping),
                 "automation_enabled": available and self.state.query_ready,
                 "trading_ready": available and self.state.trading_ready,
                 "error": base.error or self.state.error})
+
+    def retry_after(self) -> int | None:
+        with self.condition:
+            return self.reconnect.retry_after(paused=self.paused or self.stopping or self.failed)
 
     def stop(self) -> None:
         with self.condition:
@@ -288,9 +314,6 @@ class Dispatcher:
 
     def terminate_after_desktop(self) -> None:
         # 先由 Runtime 终止专属 Wine 会话，再释放 Python owner 和 IPC。
-        if self.process and self.process.is_alive():
-            self.process.terminate();self.process.join(timeout=3)
-        if self.connection:
-            self.connection.close()
+        self.worker.terminate_after_desktop()
         if self.thread.is_alive():
             self.thread.join(timeout=3)

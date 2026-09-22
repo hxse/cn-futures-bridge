@@ -14,6 +14,7 @@ from ..models import (BalanceQuery, CancelByExchange, LimitOrder, Operation, Ord
                       PositionQuery, TradeQuery, TradingStatusQuery)
 from ..results import (BalanceResult, OrdersResult, PositionsResult, Reply, ResultModel,
                        Snapshot, TradesResult, TradingStatusResult)
+from ..reconnect import CONNECTION_ERRORS
 from .csv_data import funds_text, matches, order_row, position_row, read_csv, trade_row
 from .gui import Gui
 from .native import InstrumentInfo, NativeClient, Session
@@ -62,6 +63,8 @@ class Executor:
             if initial.identity_match and initial.connected and initial.status_bound:
                 break
             if time.monotonic() >= deadline:
+                if initial.status_bound and not initial.connected:
+                    raise BridgeError("CONNECTION_FAILED", "启动时限内交易或行情连接未就绪")
                 raise BridgeError("SERVICE_NOT_READY", "启动时限内账户身份或交易/行情连接未就绪")
             time.sleep(max(.1, self.settings.execution.poll_interval_ms / 1000))
         self.login_established = True
@@ -87,7 +90,9 @@ class Executor:
             self.disconnected = True
             self.gui.bindings.clear()
             self.login_state = "disconnected"
-            raise BridgeError("SERVICE_NOT_READY", "真实账户身份或交易/行情连接未就绪")
+            if session.status_bound and session.identity_match and not session.connected:
+                raise BridgeError("CONNECTION_LOST", "交易或行情连接已断开")
+            raise BridgeError("SERVICE_NOT_READY", "真实账户身份或原生对象未就绪，需要人工核对")
         if self.session and (self.disconnected or session.identity != self.session.identity):
             self.gui.bindings.clear()
             if not rebind or session.identity == self.session.identity:
@@ -111,6 +116,17 @@ class Executor:
         self.blocked = True
         if self.login_state == "logging_in":
             self.login_state = "failed"
+
+    def failure_evidence(self, error: BridgeError) -> None:
+        if error.code not in ("GUI_RESET_FAILED", "GUI_UNRESPONSIVE", "QUERY_TIMEOUT"):
+            return
+        try:
+            directory = self.artifacts.create()
+            steps = Steps(directory.name, "diagnostic", self.journal, directory)
+            self.screenshot(steps)
+            self.artifacts.finish(directory, keep=True)
+        except (OSError, BridgeError):
+            LOG.warning("诊断异常现场未能保存", extra={"step": "evidence"})
 
     def instrument(self, instrument: str, exchange: str, *, product: bool = False) -> InstrumentInfo:
         info = self.native.instrument(instrument, product=product)
@@ -211,7 +227,7 @@ class Executor:
                 except Exception:
                     error = BridgeError("GUI_RESET_FAILED", "本次操作收尾未确认，保留证据并暂停派发")
                     self.blocked = True
-            if error and (error.code in ("GUI_UNRESPONSIVE", "GUI_RESET_FAILED", "STORAGE_UNAVAILABLE", "SERVICE_NOT_READY")
+            if error and (error.code in CONNECTION_ERRORS or error.code in ("GUI_UNRESPONSIVE", "GUI_RESET_FAILED", "STORAGE_UNAVAILABLE", "SERVICE_NOT_READY")
                           or self.native.poisoned or (steps.effect == "unknown" and steps.owned_row is None)):
                 self.fail(error)
             if error and error.code in ("GUI_UNRESPONSIVE", "GUI_RESET_FAILED") and steps.directory:

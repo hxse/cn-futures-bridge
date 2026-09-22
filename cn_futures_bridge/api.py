@@ -58,6 +58,10 @@ def create_app(service: BridgeService, *, manage_lifecycle: bool = True) -> Fast
         response.headers["X-Request-ID"] = request_id(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        if response.status_code == 503 and service.dispatcher:
+            retry = service.dispatcher.retry_after()
+            if retry is not None:
+                response.headers["Retry-After"] = str(retry)
         LOG.info("HTTP 请求结束", extra={"request_id": request_id(request), "action": request.method,
                  "step": "response", "event": "end", "duration_ms": (time.monotonic()-start)*1000,
                  "outcome": response.status_code})

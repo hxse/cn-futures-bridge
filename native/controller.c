@@ -42,7 +42,7 @@ int wmain(int argc,WCHAR **argv){
         command[0]=argument[0]=0;target=0;sscanf(line,"%31s",command);
         DWORD action=0;
         if(!strcmp(command,"windows"))action=WINDOWS;
-        else if(!strcmp(command,"settlement_windows"))action=SETTLEMENT_WINDOWS;
+        else if(!strcmp(command,"managed_windows"))action=MANAGED_WINDOWS;
         else if(!strcmp(command,"session"))action=SESSION;
         else if(!strcmp(command,"product"))action=PRODUCT;
         else if(!strcmp(command,"instrument"))action=INSTRUMENT;
@@ -61,7 +61,7 @@ int wmain(int argc,WCHAR **argv){
         DWORD previous_thread=target_thread;
         do{
             main_window=NULL;EnumWindows(locate,0);
-            if(main_window||(action!=WINDOWS&&action!=STARTUP_DONE&&action!=SETTLEMENT_WINDOWS)||!s->startup_active||GetTickCount64()>=s->startup_until)break;
+            if(main_window||(action!=WINDOWS&&action!=STARTUP_DONE&&action!=MANAGED_WINDOWS)||!s->startup_active||GetTickCount64()>=s->startup_until)break;
             /* 登录框关闭与主窗口设置标题之间允许短暂空档，不更换进程或 GUI 线程。 */
             Sleep(10);
         }while(TRUE);
@@ -79,7 +79,7 @@ int wmain(int argc,WCHAR **argv){
         else snprintf(s->argument,sizeof(s->argument),"%s",argument);
         DWORD call_timeout=timeout;
         ULONGLONG now=GetTickCount64();
-        if((action==WINDOWS||action==STARTUP_DONE||action==SETTLEMENT_WINDOWS)&&s->startup_active&&s->startup_until>now+call_timeout)
+        if((action==WINDOWS||action==STARTUP_DONE||action==MANAGED_WINDOWS)&&s->startup_active&&s->startup_until>now+call_timeout)
             call_timeout=(DWORD)(s->startup_until-now);
         DWORD_PTR result;BOOL sent=SendMessageTimeoutW(window,msg,0,0,SMTO_ABORTIFHUNG,call_timeout,&result);
         outstanding=!sent||!s->done;
@@ -87,8 +87,10 @@ int wmain(int argc,WCHAR **argv){
         printf("{\"error\":%lu,\"done\":%s,\"export_result\":%lu,\"import_completed\":%lu,\"restored\":%lu,\"dialogs_created\":%lu,\"native_ms\":%.4f,\"columns\":%lu,\"selected\":%ld,\"selected_count\":%ld,\"row_count\":%ld,\"message_hex\":\"",
                s->error,s->done?"true":"false",s->export_result,s->import_completed,s->restored,s->created_dialogs,s->export_ms,s->columns,s->selected,s->selected_count,s->row_count);
         print_hex(s->message_text);
-        printf("\",\"startup_privacy_count\":%lu,\"startup_terms_count\":%lu,\"startup_wizard_count\":%lu,\"settlement_count\":%lu,\"data\":%s}\n",
-               s->startup_privacy_count,s->startup_terms_count,s->startup_wizard_count,s->settlement_count,
+        printf("\",\"startup_privacy_count\":%lu,\"startup_terms_count\":%lu,\"startup_wizard_count\":%lu,\"settlement_count\":%lu,\"information_close_count\":%lu,",
+               s->startup_privacy_count,s->startup_terms_count,s->startup_wizard_count,s->settlement_count,s->information_close_count);
+        printf("\"trade_notice_check_count\":%lu,\"trade_notice_checked_count\":%lu,\"trade_notice_confirm_count\":%lu,\"trade_notice_closed_count\":%lu,\"data\":%s}\n",
+               s->trade_notice_check_count,s->trade_notice_checked_count,s->trade_notice_confirm_count,s->trade_notice_closed_count,
                s->output[0]&&!s->error?s->output:"{}");fflush(stdout);
         SecureZeroMemory(argument,sizeof(argument));if(!outstanding)SecureZeroMemory(s->argument,sizeof(s->argument));
         if(action==STOP&&!outstanding)break;

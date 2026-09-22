@@ -47,6 +47,11 @@ class NativeReply(BaseModel):
     startup_terms_count: int = 0
     startup_wizard_count: int = 0
     settlement_count: int = 0
+    information_close_count: int = 0
+    trade_notice_check_count: int = 0
+    trade_notice_checked_count: int = 0
+    trade_notice_confirm_count: int = 0
+    trade_notice_closed_count: int = 0
 
 
 class Window(BaseModel):
@@ -118,7 +123,8 @@ class NativeClient:
         self.process: subprocess.Popen[bytes] | None = None
         self.poisoned = False
         self.buffer = b""
-        self.startup_counts = (0, 0, 0, 0)
+        self.startup_counts = (0, 0, 0, 0, 0)
+        self.notice_counts = (0, 0, 0, 0)
         self.startup_deadline: float | None = None
         self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
                         WINEPREFIX=str(settings.wine_prefix), WINEDEBUG="-all",
@@ -189,20 +195,30 @@ class NativeClient:
             process.stdin.write((command + "\n").encode("gb18030"))
             process.stdin.flush()
             timeout = self.timeout
-            if command in ("windows", "startup_done", "settlement_windows") and self.startup_deadline is not None:
+            if command in ("windows", "startup_done", "managed_windows") and self.startup_deadline is not None:
                 timeout = max(timeout, self.startup_deadline - time.monotonic() + 1)
             result = NativeReply.model_validate_json(self._read(timeout))
         except (OSError, ValueError) as exc:
             self.poisoned = True
             raise BridgeError("GUI_UNRESPONSIVE", "原生通信失效，暂停执行") from exc
         counts = (result.startup_privacy_count, result.startup_terms_count, result.startup_wizard_count,
-                  result.settlement_count)
-        for name, current, previous in zip(("确认隐私政策", "确认软件使用协议", "跳过快速配置向导", "确认结算单"),
+                  result.settlement_count, result.information_close_count)
+        for name, current, previous in zip(("确认隐私政策", "确认软件使用协议", "跳过快速配置向导", "确认结算单", "关闭保证金监控中心"),
                                           counts, self.startup_counts):
             if current > previous:
                 LOG.info("已投递文档窗口处理请求：%s，累计 %s 次", name, current,
                          extra={"step": "document_confirmation", "event": "submitted"})
         self.startup_counts = counts
+        notice_counts = (result.trade_notice_check_count, result.trade_notice_checked_count,
+                         result.trade_notice_confirm_count, result.trade_notice_closed_count)
+        events = (("请求勾选不再提示成交通知", "checkbox_submitted"),
+                  ("已核对不再提示成交通知为勾选状态", "checkbox_verified"),
+                  ("已投递成交通知确定请求", "confirmation_submitted"),
+                  ("成交通知窗口已关闭", "end"))
+        for (message, event), current, previous in zip(events, notice_counts, self.notice_counts):
+            if current > previous:
+                LOG.info("%s，累计 %s 次", message, current, extra={"step": "trade_notice", "event": event})
+        self.notice_counts = notice_counts
         if result.error:
             LOG.error("原生调用失败：动作=%s，代码=%s", command.split(" ", 1)[0], result.error)
         if not result.done or result.error == 90:
@@ -217,8 +233,8 @@ class NativeClient:
     def windows(self) -> Windows:
         return Windows.model_validate(self.ask("windows").data)
 
-    def settlement_windows(self) -> Windows:
-        return Windows.model_validate(self.ask("settlement_windows").data)
+    def managed_windows(self) -> Windows:
+        return Windows.model_validate(self.ask("managed_windows").data)
 
     def complete_startup(self) -> None:
         while Windows.model_validate(self.ask("startup_done").data).document_pending:

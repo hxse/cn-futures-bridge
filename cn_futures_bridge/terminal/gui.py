@@ -74,22 +74,22 @@ class Gui:
                 and w.visible and w.text]
 
     def baseline(self) -> Windows:
-        # 该入口只由持有执行权的启动、请求、空闲检查或恢复流程调用；暂停时不轮询。
+        # 已知结算单和附属网页仅由持有执行权的流程处理；暂停时不轮询。
         deadline = self.native.startup_deadline or time.monotonic() + self.timeout
         if time.monotonic() >= deadline:
             raise BridgeError("QUERY_TIMEOUT", "文档确认未在期限内完成", 504)
-        snapshot = self.native.settlement_windows()
+        snapshot = self.native.managed_windows()
         pending = snapshot.document_pending
         while snapshot.document_pending:
             if time.monotonic() >= deadline:
                 raise BridgeError("QUERY_TIMEOUT", "文档确认未在期限内完成", 504)
             time.sleep(self.interval)
-            snapshot = self.native.settlement_windows()
+            snapshot = self.native.managed_windows()
         main = self.main(snapshot)
         if not main.enabled or self.dialogs(snapshot) or snapshot.flags & 4:
             raise BridgeError("GUI_RESET_FAILED", "存在未归属本次操作的窗口或菜单，请暂停后人工核对")
         if pending:
-            LOG.info("文档确认窗口已关闭，界面基线恢复", extra={"step": "document_confirmation", "event": "end"})
+            LOG.info("已识别窗口已关闭，界面基线恢复", extra={"step": "document_confirmation", "event": "end"})
         return snapshot
 
     def grid(self, table: str) -> Window:
@@ -191,6 +191,23 @@ class Gui:
         controls = [w for w in snapshot.windows if w.root == root and w.visible]
         return root, controls
 
+    def login_ready(self, snapshot: Windows, root: int) -> bool:
+        # 只检查已绑定登录窗口的可见非输入控件，不记录账号框或整棵窗口树。
+        labels = [w.text.strip().rstrip("。.!！") for w in snapshot.windows
+                  if w.root == root and w.visible and w.class_name == "Static"]
+        if "连接服务器失败" in labels:
+            raise BridgeError("CONNECTION_FAILED", "快期提示连接服务器失败")
+        attention = ("密码错误", "密码不正确", "密码不匹配", "用户不存在", "账户被锁", "账号被锁", "验证码")
+        if any(part in label for label in labels for part in attention):
+            raise BridgeError("LOGIN_REQUIRES_ATTENTION", "登录提示需要核对凭证、账户或验证码，未自动重试")
+        if snapshot.document_pending:
+            return False
+        dialogs = [w for w in self.dialogs(snapshot) if w.hwnd != root]
+        if dialogs:
+            raise BridgeError("GUI_RESET_FAILED", "登录出现未识别的阻塞窗口，保留现场并停止自动重试")
+        return any(w.root == w.hwnd and w.enabled and w.text.endswith(self.titles)
+                   for w in snapshot.windows) and not self.dialogs(snapshot)
+
     def login(self) -> None:
         root, controls = self.prepare_login()
         # 账号 ComboBox 与其子 Edit 的几何距离可能相同；固定版本按原生编号定位。
@@ -210,9 +227,7 @@ class Gui:
             raise BridgeError("SERVICE_NOT_READY", "登录按钮身份不唯一")
         self.activate("用户登录");self.native.ask(f"focus {buttons[0].hwnd}");self.key("space")
         def ready() -> bool:
-            snapshot = self.native.settlement_windows()
-            return any(w.root == w.hwnd and w.enabled and w.text.endswith(self.titles)
-                       for w in snapshot.windows) and not self.dialogs(snapshot)
-        self.wait(ready, "目标环境登录或启动确认未完成，未自动重试或更换站点",
-                  self.settings.bridge.startup_timeout_seconds)
+            return self.login_ready(self.native.managed_windows(), root)
+        remaining = max(0, self.native.startup_deadline-time.monotonic()) if self.native.startup_deadline else 0
+        self.wait(ready, "登录或文档确认超时，缺少明确连接故障证据，需要人工核对", remaining)
         self.baseline()

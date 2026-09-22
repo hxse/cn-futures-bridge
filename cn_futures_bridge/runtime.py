@@ -18,7 +18,7 @@ import threading
 import time
 
 from .config import Settings
-from .errors import BridgeError, ErrorDetail, ServiceStatus
+from .errors import BridgeError, ErrorDetail, ReconnectStatus, ServiceStatus
 from .logging_store import LogStore
 
 LOG = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ class Runtime:
                                          broker_name=settings.profile.broker_name, sites=list(settings.profile.sites))
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
+        self.lifecycle_lock = threading.Lock()
         self.screenshot_lock = threading.Lock()
         self.session_lock: TextIO | None = None
         self.worker: threading.Thread | None = None
@@ -164,14 +165,17 @@ class Runtime:
                 self.window_visible = True
             LOG.info("快期窗口已出现；账号登录和交易能力尚未验证")
             while not self.stop_event.wait(1):
-                for name in ("xvfb", "openbox", "terminal", "vnc", "novnc"):
-                    process = self.processes.get(name)
-                    if process is not None and process.poll() is not None:
-                        raise BridgeError("PROCESS_EXITED", f"{name} 进程退出，查看对应日志")
-                visible = self._has_window()
-                with self.lock:
-                    self.window_visible = visible
-                    self.state = "window_visible" if visible else "window_missing"
+                with self.lifecycle_lock:
+                    if self.stop_event.is_set() or self.error:
+                        break
+                    for name in ("xvfb", "openbox", "terminal", "vnc", "novnc"):
+                        process = self.processes.get(name)
+                        if process is not None and process.poll() is not None:
+                            raise BridgeError("PROCESS_EXITED", f"{name} 进程退出，查看对应日志")
+                    visible = self._has_window()
+                    with self.lock:
+                        self.window_visible = visible
+                        self.state = "window_visible" if visible else "window_missing"
         except BridgeError as exc:
             if not self.stop_event.is_set():
                 self._fail(exc.code, str(exc))
@@ -182,6 +186,42 @@ class Runtime:
             # 启动失败时保留现有桌面和 VNC，便于查看错误窗口；不自动重启终端。
             if self.stop_event.is_set():
                 self._stop_processes()
+
+    def restart_terminal(self) -> None:
+        """旧 worker 已退出后，仅回收专属 Wine；桌面、VNC 和 HTTP 继续运行。"""
+        with self.lifecycle_lock:
+            if self.stop_event.is_set() or self.error:
+                raise BridgeError("SERVICE_NOT_READY", "桌面已停止或异常，不能自动重连")
+            with self.lock:
+                self.state = "reconnecting"
+                self.window_visible = False
+            try:
+                LOG.info("停止旧 Wine 会话", extra={"step": "reconnect_wine", "event": "start"})
+                for command in (["wineserver", "-k"], ["wineserver", "-w"]):
+                    if self._command(command, 10).returncode != 0:
+                        raise BridgeError("GUI_UNRESPONSIVE", "Wine 会话退出未确认，停止自动重连")
+                previous = self.processes.get("terminal")
+                if previous:
+                    previous.wait(timeout=3)
+                if self.stop_event.is_set():
+                    raise BridgeError("STOPPING", "停止期间不再启动终端")
+                target = self._prepare_files()
+                self._initialize_wine()
+                self._spawn("terminal", ["wine", str(target / self.manifest.executable)], target)
+                self._wait(lambda: self._has_window(login_only=True), self.settings.bridge.startup_timeout_seconds,
+                           "WINDOW_TIMEOUT", "重连启动未出现登录窗口")
+                with self.lock:
+                    self.state = "window_visible"
+                    self.window_visible = True
+                LOG.info("新登录窗口就绪", extra={"step": "reconnect_wine", "event": "end"})
+            except (OSError, subprocess.SubprocessError) as exc:
+                error = BridgeError("GUI_UNRESPONSIVE", "Wine 恢复失败或退出未确认，停止自动重连")
+                self._fail(error.code, str(error))
+                raise error from exc
+            except BridgeError as exc:
+                if not self.stop_event.is_set():
+                    self._fail(exc.code, str(exc))
+                raise
 
     def _start_vnc(self) -> None:
         self._spawn("vnc", ["x11vnc", "-display", ":99", "-forever", "-shared",
@@ -203,6 +243,9 @@ class Runtime:
                                  state=self.state, terminal_version=self.manifest.version,
                                  terminal_window_visible=self.window_visible,
                                  account_configured=self.settings.account.configured,
+                                 reconnect=ReconnectStatus(enabled=self.settings.reconnect.enabled and self.settings.account.configured,
+                                     interval_seconds=self.settings.reconnect.interval_seconds,
+                                     state="idle" if self.settings.reconnect.enabled and self.settings.account.configured else "disabled"),
                                  vnc_enabled=self.vnc, error=self.error)
 
     def screenshot(self) -> bytes:

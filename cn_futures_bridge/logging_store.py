@@ -22,8 +22,8 @@ class LogStore(logging.Handler):
         self.root.mkdir(parents=True, exist_ok=True)
         self.maximum = settings.logging.max_total_bytes
         self.file_maximum = settings.logging.max_file_bytes
-        self.secrets = tuple(value for value in (
-            settings.account.username.get_secret_value(), settings.account.password.get_secret_value()) if value)
+        self.secrets = tuple(value for account in (settings.accounts.sandbox, settings.accounts.live)
+            for value in (account.username.get_secret_value(), account.password.get_secret_value()) if value)
         self.current = self._new_path()
         self.terminal_logs = settings.terminal_dir / "logs"
         self.mutex = threading.RLock()
@@ -87,8 +87,11 @@ class LogStore(logging.Handler):
             finally:
                 stream.close()
         worker = threading.Thread(target=consume, name=f"log-{name}", daemon=True)
-        self.pumps.append(worker)
-        worker.start()
+        with self.mutex:
+            # 长期重连会重复创建 Wine 日志管道，不保留已退出线程的引用。
+            self.pumps = [pump for pump in self.pumps if pump.is_alive()]
+            self.pumps.append(worker)
+            worker.start()
 
     def maintain(self) -> None:
         _, active = closed_logs(self.root, self.terminal_logs)

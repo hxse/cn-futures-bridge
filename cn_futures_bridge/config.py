@@ -23,9 +23,14 @@ class ConfigModel(BaseModel):
 
 
 class BridgeConfig(ConfigModel):
-    environment: Literal["simnow", "live"] = "simnow"
+    mode: Literal["sandbox", "live"] = "sandbox"
     data_dir: Path = Path("/data")
     startup_timeout_seconds: Annotated[int, Field(ge=15, le=300)] = 90
+
+    @property
+    def environment(self) -> Literal["simnow", "live"]:
+        # 保持原生 profile、持久化目录及幂等记录的既有身份。
+        return "simnow" if self.mode == "sandbox" else "live"
 
     @field_validator("data_dir", mode="before")
     @classmethod
@@ -49,6 +54,11 @@ class AccountConfig(ConfigModel):
         return bool(self.username.get_secret_value() and self.password.get_secret_value())
 
 
+class AccountsConfig(ConfigModel):
+    sandbox: AccountConfig = Field(default_factory=AccountConfig)
+    live: AccountConfig = Field(default_factory=AccountConfig)
+
+
 class ApiConfig(ConfigModel):
     host: Annotated[str, Field(min_length=1)] = "0.0.0.0"
     port: Port = 45173
@@ -63,6 +73,11 @@ class DesktopConfig(ConfigModel):
 class VncConfig(ConfigModel):
     port: Port = 45174
     web_port: Port = 45175
+
+
+class ReconnectConfig(ConfigModel):
+    enabled: bool = True
+    interval_seconds: Annotated[int, Field(ge=60, le=86400)] = 600
 
 
 class ExecutionConfig(ConfigModel):
@@ -101,17 +116,22 @@ class ArtifactConfig(ConfigModel):
 
 class Settings(ConfigModel):
     bridge: BridgeConfig = Field(default_factory=BridgeConfig)
-    account: AccountConfig = Field(default_factory=AccountConfig)
+    accounts: AccountsConfig = Field(default_factory=AccountsConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
     vnc: VncConfig = Field(default_factory=VncConfig)
+    reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     artifacts: ArtifactConfig = Field(default_factory=ArtifactConfig)
 
     @property
     def request_mode(self) -> Literal["sandbox", "live"]:
-        return "sandbox" if self.bridge.environment == "simnow" else "live"
+        return self.bridge.mode
+
+    @property
+    def account(self) -> AccountConfig:
+        return self.accounts.sandbox if self.bridge.mode == "sandbox" else self.accounts.live
 
     @property
     def broker_id(self) -> str:
@@ -149,8 +169,9 @@ class Settings(ConfigModel):
 
     @property
     def identity_signature(self) -> str:
-        # 标签不保存密码，也不输出摘要前的配置或账号原文。
-        value = self.model_dump_json(exclude={"account": {"password", "username"}})
+        # 备用配置不参与当前实例的身份；标签不保存密码或账号原文。
+        value = self.model_dump_json(exclude={"accounts"})
+        value += self.account.model_dump_json(exclude={"password", "username"})
         value += ":" + self.account.username.get_secret_value()
         return hashlib.sha256(value.encode()).hexdigest()
 
@@ -162,6 +183,8 @@ class Settings(ConfigModel):
 
     @model_validator(mode="after")
     def selected_profile(self) -> Self:
+        if bool(self.account.username.get_secret_value()) != bool(self.account.password.get_secret_value()):
+            raise ValueError(f"accounts.{self.bridge.mode} 的 username/password 必须一起填写或一起留空")
         if self.site not in self.profile.sites:
             raise ValueError("必须明确选择该券商的原生站点，live 不自动选择站点")
         return self
@@ -176,6 +199,8 @@ def load_settings(path: Path) -> Settings:
         raise ConfigError("配置文件不是有效的 UTF-8 TOML") from exc
     if isinstance(data.get("api"), dict) and "token" in data["api"]:
         raise ConfigError("api.token 已退出，请先执行 just migrate-config")
+    if "account" in data or (isinstance(data.get("bridge"), dict) and "environment" in data["bridge"]):
+        raise ConfigError("旧 account/bridge.environment 已退出，请先执行 just migrate-config")
     try:
         return Settings.model_validate(data)
     except ValidationError as exc:
