@@ -22,7 +22,7 @@ static LRESULT CALLBACK ObserveDialogs(int code, WPARAM w, LPARAM l) {
     if(code==HCBT_ACTIVATE&&state){
         WCHAR title[128];GetWindowTextW((HWND)w,title,128);
         if(!wcscmp(title,L"用户登录"))InterlockedIncrement((LONG *)&state->login_generation);
-        confirm_startup(state,(HWND)w);
+        confirm_document(state,(HWND)w,0);
     }
     if (code==HCBT_CREATEWND && state) {
         WCHAR name[64];
@@ -95,7 +95,6 @@ static void handle(HWND window) {
         return;
     }
     if (!compatible()) { state->error=1; state->done=1; return; }
-    if(state->action==STARTUP_DONE){state->startup_active=0;state->done=1;return;}
     if (!cbt_hook) {
         cbt_hook=SetWindowsHookExW(WH_CBT,ObserveDialogs,self_module,GetCurrentThreadId());
         if (!cbt_hook) { state->error=2; state->win_error=GetLastError(); state->done=1; return; }
@@ -169,7 +168,7 @@ __declspec(dllexport) LRESULT CALLBACK CfbHook(int code, WPARAM w, LPARAM l) {
         if(state&&message->message==WM_SHOWWINDOW&&message->wParam){
             WCHAR title[128];GetWindowTextW(message->hwnd,title,128);
             if(!wcscmp(title,L"用户登录"))InterlockedIncrement((LONG *)&state->login_generation);
-            confirm_startup(state,message->hwnd);
+            confirm_document(state,message->hwnd,0);
         }
         if (!probe_message) probe_message=RegisterWindowMessageW(PROBE_MESSAGE);
         if (message->message==probe_message) handle(message->hwnd);

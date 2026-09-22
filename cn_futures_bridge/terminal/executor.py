@@ -68,6 +68,7 @@ class Executor:
         self.validate_session(rebind=True)
         self.gui.baseline()
         self.native.complete_startup()
+        self.gui.baseline()
         LOG.info("启动账户身份及交易/行情连接已核对", extra={"step": "login_ready", "event": "end"})
 
     def validate_session(self, *, rebind: bool = False) -> Session:

@@ -1,6 +1,7 @@
 """快捷键与原生控件适配；未知窗口不盲按 Esc 或 Enter。"""
 
 from collections.abc import Callable
+import logging
 import re
 import subprocess
 import time
@@ -8,6 +9,8 @@ import time
 from ..config import Settings
 from ..errors import BridgeError
 from .native import NativeClient, Window, Windows
+
+LOG = logging.getLogger(__name__)
 
 TABLES = {"orders": ("F5", 3501, 16, "全部", "alt+a"),
           "working": ("F6", 3501, 9, None, None),
@@ -71,10 +74,22 @@ class Gui:
                 and w.visible and w.text]
 
     def baseline(self) -> Windows:
-        snapshot = self.native.windows()
+        # 该入口只由持有执行权的启动、请求、空闲检查或恢复流程调用；暂停时不轮询。
+        deadline = self.native.startup_deadline or time.monotonic() + self.timeout
+        if time.monotonic() >= deadline:
+            raise BridgeError("QUERY_TIMEOUT", "文档确认未在期限内完成", 504)
+        snapshot = self.native.settlement_windows()
+        pending = snapshot.document_pending
+        while snapshot.document_pending:
+            if time.monotonic() >= deadline:
+                raise BridgeError("QUERY_TIMEOUT", "文档确认未在期限内完成", 504)
+            time.sleep(self.interval)
+            snapshot = self.native.settlement_windows()
         main = self.main(snapshot)
         if not main.enabled or self.dialogs(snapshot) or snapshot.flags & 4:
             raise BridgeError("GUI_RESET_FAILED", "存在未归属本次操作的窗口或菜单，请暂停后人工核对")
+        if pending:
+            LOG.info("文档确认窗口已关闭，界面基线恢复", extra={"step": "document_confirmation", "event": "end"})
         return snapshot
 
     def grid(self, table: str) -> Window:
@@ -195,7 +210,7 @@ class Gui:
             raise BridgeError("SERVICE_NOT_READY", "登录按钮身份不唯一")
         self.activate("用户登录");self.native.ask(f"focus {buttons[0].hwnd}");self.key("space")
         def ready() -> bool:
-            snapshot = self.native.windows()
+            snapshot = self.native.settlement_windows()
             return any(w.root == w.hwnd and w.enabled and w.text.endswith(self.titles)
                        for w in snapshot.windows) and not self.dialogs(snapshot)
         self.wait(ready, "目标环境登录或启动确认未完成，未自动重试或更换站点",

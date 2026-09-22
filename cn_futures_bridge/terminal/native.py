@@ -46,6 +46,7 @@ class NativeReply(BaseModel):
     startup_privacy_count: int = 0
     startup_terms_count: int = 0
     startup_wizard_count: int = 0
+    settlement_count: int = 0
 
 
 class Window(BaseModel):
@@ -75,6 +76,7 @@ class Windows(BaseModel):
     windows: list[Window]
     focus: int
     flags: int
+    document_pending: bool = False
 
 
 class Session(BaseModel):
@@ -116,7 +118,7 @@ class NativeClient:
         self.process: subprocess.Popen[bytes] | None = None
         self.poisoned = False
         self.buffer = b""
-        self.startup_counts = (0, 0, 0)
+        self.startup_counts = (0, 0, 0, 0)
         self.startup_deadline: float | None = None
         self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
                         WINEPREFIX=str(settings.wine_prefix), WINEDEBUG="-all",
@@ -187,17 +189,19 @@ class NativeClient:
             process.stdin.write((command + "\n").encode("gb18030"))
             process.stdin.flush()
             timeout = self.timeout
-            if command == "windows" and self.startup_deadline is not None:
+            if command in ("windows", "startup_done", "settlement_windows") and self.startup_deadline is not None:
                 timeout = max(timeout, self.startup_deadline - time.monotonic() + 1)
             result = NativeReply.model_validate_json(self._read(timeout))
         except (OSError, ValueError) as exc:
             self.poisoned = True
             raise BridgeError("GUI_UNRESPONSIVE", "原生通信失效，暂停执行") from exc
-        counts = (result.startup_privacy_count, result.startup_terms_count, result.startup_wizard_count)
-        for name, current, previous in zip(("确认隐私政策", "确认软件使用协议", "跳过快速配置向导"), counts, self.startup_counts):
+        counts = (result.startup_privacy_count, result.startup_terms_count, result.startup_wizard_count,
+                  result.settlement_count)
+        for name, current, previous in zip(("确认隐私政策", "确认软件使用协议", "跳过快速配置向导", "确认结算单"),
+                                          counts, self.startup_counts):
             if current > previous:
-                LOG.info("已自动处理启动窗口：%s，累计 %s 次", name, current,
-                         extra={"step": "startup_confirmation", "event": "confirmed"})
+                LOG.info("已投递文档窗口处理请求：%s，累计 %s 次", name, current,
+                         extra={"step": "document_confirmation", "event": "submitted"})
         self.startup_counts = counts
         if result.error:
             LOG.error("原生调用失败：动作=%s，代码=%s", command.split(" ", 1)[0], result.error)
@@ -213,8 +217,14 @@ class NativeClient:
     def windows(self) -> Windows:
         return Windows.model_validate(self.ask("windows").data)
 
+    def settlement_windows(self) -> Windows:
+        return Windows.model_validate(self.ask("settlement_windows").data)
+
     def complete_startup(self) -> None:
-        self.ask("startup_done")
+        while Windows.model_validate(self.ask("startup_done").data).document_pending:
+            if self.startup_deadline is None or time.monotonic() >= self.startup_deadline:
+                raise BridgeError("QUERY_TIMEOUT", "启动文档确认未在期限内完成", 504)
+            time.sleep(self.settings.execution.poll_interval_ms / 1000)
         self.startup_deadline = None
 
     def session(self) -> Session:

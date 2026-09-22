@@ -7,6 +7,7 @@
 
 static ProbeState *active;
 static unsigned count;
+static int document_pending;
 static void add_window(HWND w) {
     if(count>=512){active->error=30;return;}
     char cls[80];GetClassNameA(w,cls,80);
@@ -39,14 +40,20 @@ static void add_window(HWND w) {
 static BOOL CALLBACK child(HWND w,LPARAM unused){add_window(w);return active->error!=30;}
 static BOOL CALLBACK top(HWND w,LPARAM unused){
     DWORD pid;GetWindowThreadProcessId(w,&pid);
-    if(pid==active->pid&&IsWindowVisible(w)){add_window(w);EnumChildWindows(w,child,0);}
+    if(pid==active->pid&&IsWindowVisible(w)){
+        if(confirm_document(active,w,active->action==SETTLEMENT_WINDOWS||active->action==STARTUP_DONE))document_pending=1;
+        add_window(w);EnumChildWindows(w,child,0);
+    }
     return active->error!=30;
 }
 void gui_query(ProbeState *s,HWND window){
-    if(s->action==WINDOWS){
-        active=s;count=0;emit(s,"{\"windows\":[");EnumWindows(top,0);
+    if(s->action==WINDOWS||s->action==STARTUP_DONE||s->action==SETTLEMENT_WINDOWS){
+        active=s;count=0;document_pending=0;emit(s,"{\"windows\":[");EnumWindows(top,0);
         GUITHREADINFO info={0};info.cbSize=sizeof(info);GetGUIThreadInfo(GetCurrentThreadId(),&info);
-        emit(s,"],\"focus\":%lu,\"flags\":%lu}",(DWORD)(uintptr_t)info.hwndFocus,info.flags);active=NULL;return;
+        emit(s,"],\"focus\":%lu,\"flags\":%lu,\"document_pending\":%s}",
+             (DWORD)(uintptr_t)info.hwndFocus,info.flags,document_pending?"true":"false");
+        if(s->action==STARTUP_DONE&&!document_pending&&!s->error)s->startup_active=0;
+        active=NULL;return;
     }
     if(!IsWindowVisible(window)||!IsWindowEnabled(window)){s->error=31;return;}
     if(s->action==FOCUS){
