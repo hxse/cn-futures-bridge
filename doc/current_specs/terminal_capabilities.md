@@ -13,7 +13,7 @@
 | 客户端 | 普通快期2，`2.93.405.1998`；安装包及哈希由 `terminal.lock.toml` 固定 |
 | 账户环境 | SimNow，上期技术 / 9999；Wine 11 复测为“电信2”，Wine 8 基线为“全天站点” |
 | 容器 | Podman，Debian bookworm-slim，带 VNC 的镜像变体 |
-| Windows 运行环境 | 32 位 WineHQ 11.0，包版本 `11.0.0.0~bookworm-1`；历史基线为 Wine 8.0；文泉驿微米黑字体 |
+| Windows 运行环境 | 32 位 WineHQ 11.0 预编译包 `11.0.0.0~bookworm-1`；历史基线为 Wine 8.0；文泉驿微米黑字体 |
 | 桌面 | Xvfb、Openbox，1280×800，24 位色深，DPI 96；Wine 11 复测窗口未最大化，Wine 8 基线最大化 |
 | 操作方式 | `xdotool` 按键；原生控件定位及文本读取；原生 CSV 导入导出及普通弹窗对照；交易状态直接查询快期内部函数 |
 

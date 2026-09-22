@@ -4,9 +4,13 @@
 
 ## 终端与镜像
 
-`terminal.lock.toml` 锁定普通快期2 2.93.405.1998 的官方包及 SHA256，profiles 目录声明上期技术/9999 和 H华安期货/6020。构建分别生成只含目标券商的 simnow/huaan 种子，不修改原生站点和认证参数。WineHQ 11.0 的 32 位包版本锁定 `11.0.0.0~bookworm-1`；启动直接运行 q7_release.exe，先验证种子的环境、券商和全部程序文件哈希。
+`terminal.lock.toml` 锁定普通快期2 2.93.405.1998 的官方包及 SHA256，profiles 目录声明上期技术/9999 和 H华安期货/6020。构建分别生成只含目标券商的 simnow/huaan 种子，不修改原生站点和认证参数。Wine 使用 WineHQ 11.0 的 32 位预编译包，`wine-stable:i386` 与 `wine-stable-i386:i386` 均锁定 `11.0.0.0~bookworm-1`，不从源码编译。启动直接运行 q7_release.exe，先验证种子的环境、券商和全部程序文件哈希。
 
-headless 与 vnc 共用终端、Python 依赖和业务代码；vnc 只增加远程桌面组件。两者都有 Xvfb/Openbox、截图和中文字体，1280×800/96 DPI 为默认设置。先确认显示与窗口管理器，再引导 Wine 会话、启动客户端；持久化前缀不跳过 Wine 会话引导。
+headless 与 vnc 共用终端、Python 依赖和业务代码；vnc 只增加远程桌面组件。两者都有 Xvfb/Openbox、截图和中文字体，1280×800/96 DPI 为默认设置。Xvfb 关闭 GLX，保留二维 X11。先确认显示与窗口管理器，再引导 Wine 会话、启动客户端；持久化前缀不跳过 Wine 会话引导。
+
+Wine 保留官方包及其必要依赖，Mono/MSHTML 仍由运行环境禁用。优化优先考虑运行内存和构建耗时，不为缩小镜像引入完整 Wine 源码编译，也不强行删除 dpkg 依赖或任意 Wine 服务。原生桥接和轻量截图工具仍在独立构建阶段编译，运行镜像只携带产物。
+
+诊断和失败证据统一使用 `cfb-capture`，读取 X11 根窗口并通过 libpng 保存 RGB PNG，保留超时和原有容量治理；不安装 scrot。Openbox 仍依赖 Imlib2，因此其共用图像库继续保留。中文字体仍使用完整文泉驿微米黑及原有映射，不裁剪字库。
 
 数据卷默认 `/data`，共享 logs、artifacts、state；terminal/wine 位于 sessions 下按环境、券商、站点和账户摘要隔离。摘要目录不显示凭证原文，旧 /data/terminal 和 /data/wine 保留但不自动迁移。`.session.lock` 排他锁保护整个实例；停止只处理本容器进程，保留数据卷。程序退出或启动失败不自动重登和无限重启。
 
@@ -56,4 +60,4 @@ artifacts 中只管理明确登记的 op 工件目录，记录 active/ended/prot
 
 开发静态检查与容器无关：宿主安装 uv，首次通过 `uv sync --locked` 准备项目 `.venv`，随后 `just check` 直接执行 `uvx ty check`。ty 自动发现本地依赖环境，检查目标保持 Python 3.11，不再固定容器路径 `/opt/venv`。检查不会构建镜像、启动应用或读取账户配置。
 
-`just test` 继续在工具容器中运行少量离线 pytest，关闭网络且不挂载实际账户配置。应用运行及原生 helper 构建仍使用 Podman；静态检查不受该运行边界限制。完整 GUI、交易和状态变化的在线覆盖不能由类型检查推导。
+`just test` 继续在工具容器中运行少量离线 pytest，关闭网络且不挂载实际账户配置。截图检查使用独立 Xvfb 验证完整 PNG、颜色、尺寸及显示不可用错误，不启动 Wine 或账户会话。应用运行及原生 helper 构建仍使用 Podman；静态检查不受该运行边界限制。完整 GUI、交易和状态变化的在线覆盖不能由类型检查推导。

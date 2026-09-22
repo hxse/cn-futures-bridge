@@ -8,7 +8,7 @@
 
 ## 固定版本与数据入口
 
-适用客户端为 `2.93.405.1998`、32 位 WineHQ 11.0；完整运行条件见 [terminal_capabilities.md](terminal_capabilities.md)。以下是已验证程序文件身份，不是调用方可配置的任意 DLL 路径：
+适用客户端为 `2.93.405.1998`、32 位 Wine 11.0；当前 Wine 构建见 [bootstrap.md](bootstrap.md)，完整能力边界见 [terminal_capabilities.md](terminal_capabilities.md)。以下是已验证程序文件身份，不是调用方可配置的任意 DLL 路径：
 
 | 文件 | SHA256 |
 | --- | --- |

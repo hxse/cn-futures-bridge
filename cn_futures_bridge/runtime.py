@@ -145,7 +145,7 @@ class Runtime:
             size = f"{self.settings.desktop.width}x{self.settings.desktop.height}x24"
             self._spawn("xvfb", ["Xvfb", ":99", "-screen", "0", size, "-dpi",
                                   str(self.settings.desktop.dpi), "-s", "0", "-noreset",
-                                  "-nolisten", "tcp", "-ac"])
+                                  "-nolisten", "tcp", "-ac", "-extension", "GLX"])
             self._wait(lambda: self._command(["xdpyinfo"]).returncode == 0,
                        15, "DISPLAY_TIMEOUT", "虚拟屏幕启动超时")
             self._spawn("openbox", ["openbox", "--config-file", "/opt/bridge/container/openbox.xml"])
@@ -209,7 +209,7 @@ class Runtime:
         with self.screenshot_lock, tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "desktop.png"
             try:
-                result = self._command(["scrot", "--overwrite", str(path)], 5)
+                result = self._command(["cfb-capture", str(path)], 5)
             except (OSError, subprocess.SubprocessError) as exc:
                 raise BridgeError("SCREENSHOT_UNAVAILABLE", "截图进程失败或超时") from exc
             if result.returncode != 0 or not path.exists():

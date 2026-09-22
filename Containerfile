@@ -11,7 +11,15 @@ FROM toolchain AS dependencies
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
+FROM toolchain AS capture-build
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev libx11-dev libpng-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY container/capture.c /tmp/capture.c
+RUN gcc -std=c11 -Wall -Wextra -Werror -O2 -s /tmp/capture.c -o /usr/local/bin/cfb-capture -lX11 -lpng
+
 FROM toolchain AS tools
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb x11-xserver-utils libpng16-16 \
+    && rm -rf /var/lib/apt/lists/*
 ENV UV_TOOL_BIN_DIR=/usr/local/bin
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen \
@@ -21,6 +29,7 @@ COPY container ./container
 COPY tests ./tests
 COPY scripts ./scripts
 COPY config.example.toml terminal.lock.toml ./
+COPY --from=capture-build /usr/local/bin/cfb-capture /usr/local/bin/
 ENV PATH="/opt/venv/bin:${PATH}" UV_OFFLINE=1
 
 FROM toolchain AS native-build
@@ -52,10 +61,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN dpkg --add-architecture i386 && apt-get update \
     && apt-get install -y --no-install-recommends \
        python3 tini libfontconfig1:i386 libfreetype6:i386 libxrender1:i386 libgnutls30:i386 \
-       xvfb xauth x11-utils xdotool scrot openbox fonts-wqy-microhei locales tzdata ca-certificates \
+       xvfb xauth x11-utils xdotool libpng16-16 openbox fonts-wqy-microhei locales tzdata ca-certificates \
     && python3 -c "from pathlib import Path; import hashlib,urllib.request; key=urllib.request.urlopen('https://dl.winehq.org/wine-builds/winehq.key', timeout=30).read(); assert hashlib.sha256(key).hexdigest() == 'd965d646defe94b3dfba6d5b4406900ac6c81065428bf9d9303ad7a72ee8d1b8', 'WineHQ signing key changed'; Path('/usr/share/keyrings/winehq.asc').write_bytes(key); Path('/etc/apt/sources.list.d/winehq.list').write_text('deb [arch=i386 signed-by=/usr/share/keyrings/winehq.asc] https://dl.winehq.org/wine-builds/debian bookworm main\\n')" \
     && apt-get -o Acquire::Retries=1 -o Acquire::https::Timeout=30 update \
-    && apt-get -o Acquire::Retries=1 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
+    && apt-get -o Acquire::https::Timeout=30 -o Acquire::Retries=1 install -y --no-install-recommends \
        wine-stable:i386=11.0.0.0~bookworm-1 wine-stable-i386:i386=11.0.0.0~bookworm-1 \
     && /opt/wine-stable/bin/wine --version \
     && sed -i 's/^# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen \
@@ -64,6 +73,7 @@ RUN dpkg --add-architecture i386 && apt-get update \
     && mkdir -p /data /etc/cn-futures-bridge && chown bridge:bridge /data \
     && rm -rf /var/lib/apt/lists/*
 ENV LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8 TZ=Asia/Shanghai PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH="/opt/wine-stable/bin:${PATH}"
+COPY --from=capture-build /usr/local/bin/cfb-capture /usr/local/bin/
 RUN install -d -o root -g root -m 1777 /tmp/.X11-unix
 WORKDIR /opt/bridge
 COPY --from=dependencies /opt/venv /opt/venv

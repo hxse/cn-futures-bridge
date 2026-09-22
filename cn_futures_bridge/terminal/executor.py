@@ -242,7 +242,7 @@ class Executor:
         assert steps.directory is not None
         try:
             self.artifacts.clean()
-            subprocess.run(["scrot", "--overwrite", str(steps.directory / "failure.png")],
+            subprocess.run(["cfb-capture", str(steps.directory / "failure.png")],
                            env=self.native.env, capture_output=True, timeout=3, check=True)
             self.artifacts.clean()
         except (OSError, subprocess.SubprocessError, BridgeError):
