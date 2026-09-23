@@ -13,7 +13,7 @@ static int button(HWND window,const WCHAR *first,const WCHAR *second,int enabled
 
 static unsigned handled_count(const ProbeState *s){
     return s->startup_privacy_count+s->startup_terms_count+s->startup_wizard_count
-        +s->settlement_count+s->information_close_count+s->trade_notice_count;
+        +s->settlement_count+s->information_close_count;
 }
 
 static unsigned notice_number(const WCHAR **cursor){
@@ -26,13 +26,13 @@ static unsigned notice_number(const WCHAR **cursor){
     return result;
 }
 
-static int notice_title(const WCHAR *title){
-    if(!wcscmp(title,L"成交通知"))return 1;
+static int notice_title(const WCHAR *title,const WCHAR *name){
+    if(!wcscmp(title,name))return 1;
     if(*title++!=L'(')return 0;
     unsigned current=notice_number(&title);
     if(!current||*title++!=L'/')return 0;
     unsigned total=notice_number(&title);
-    return total>=current&&!wcscmp(title,L") 成交通知");
+    return total>=current&&title[0]==L')'&&title[1]==L' '&&!wcscmp(title+2,name);
 }
 
 static int trade_notice(ProbeState *s,HWND window){
@@ -48,7 +48,7 @@ static int trade_notice(ProbeState *s,HWND window){
         ||!IsWindowVisible(confirm)||!IsWindowVisible(check)||!IsWindowVisible(body))return 0;
     int length=GetWindowTextLengthW(body);
     if(length==0)return 1;
-    if(length>=2048||GetWindowTextW(body,text,2048)!=length)return 0;
+    if(length>=2048||GetWindowTextW(body,text,2048)<=0)return 0;
     int matches=wcsstr(text,L"合约")&&wcsstr(text,L"买卖")&&wcsstr(text,L"开平")
         &&wcsstr(text,L"成交量")&&wcsstr(text,L"成交价");
     SecureZeroMemory(text,sizeof(text));if(!matches)return 0;
@@ -61,7 +61,6 @@ static int trade_notice(ProbeState *s,HWND window){
     if(!IsWindowEnabled(window)||!IsWindowEnabled(confirm))return 1;
     LRESULT checked=SendMessageW(check,BM_GETCHECK,0,0);
     if(s->trade_notice_phase==0){
-        if(handled_count(s)>=8)return 1;
         if(checked==BST_UNCHECKED){
             if(IsWindowEnabled(check)&&PostMessageW(check,BM_CLICK,0,0)){
                 s->trade_notice_count++;s->trade_notice_check_count++;s->trade_notice_phase=1;
@@ -76,6 +75,33 @@ static int trade_notice(ProbeState *s,HWND window){
     if(s->trade_notice_phase==1){s->trade_notice_checked_count++;s->trade_notice_phase=2;}
     if(PostMessageW(window,WM_COMMAND,MAKEWPARAM(IDOK,BN_CLICKED),(LPARAM)confirm)){
         s->trade_notice_confirm_count++;s->trade_notice_phase=3;
+    }
+    return 1;
+}
+
+static int order_notice(ProbeState *s,HWND window,DWORD kind){
+    HWND confirm=GetDlgItem(window,IDOK),check=GetDlgItem(window,1299),body=GetDlgItem(window,7501);
+    WCHAR cls[64],text[1024];GetClassNameW(body,cls,64);
+    const WCHAR *labels[]={L"不再提示下单失败",L"不再提示下单成功",
+                           L"不再提示撤单成功(即时单)",L"不再提示撤单失败(即时单)",
+                           L"不再提示撤单成功",L"不再提示撤单失败"};
+    if(GetDlgItem(window,IDCANCEL)||!button(confirm,L"确定",L"确定",0)
+        ||!button(check,labels[kind-7],labels[kind-7],0)
+        ||GetParent(confirm)!=window||GetParent(check)!=window||GetParent(body)!=window
+        ||wcscmp(cls,L"Static")||!IsWindowVisible(body)||!IsWindowVisible(confirm)||!IsWindowVisible(check))return 0;
+    int length=GetWindowTextLengthW(body);
+    if(length==0)return 1;
+    if(length>=1024||GetWindowTextW(body,text,1024)<=0)return 0;
+    int matched=wcsstr(text,L"合约：")&&wcsstr(text,L"买卖：")&&wcsstr(text,L"开平：")
+        &&wcsstr(text,L"手数：")&&wcsstr(text,L"价格：")&&wcsstr(text,L"备注：");
+    SecureZeroMemory(text,sizeof(text));if(!matched)return 0;
+    if(s->startup_last_kind==kind&&s->startup_last_window==(DWORD)(uintptr_t)window)return 1;
+    if(!IsWindowEnabled(window)||!IsWindowEnabled(confirm))return 1;
+    /* 运行期通知由基线期限及窗口去重限制，不耗尽启动文档的会话预算。 */
+    GetWindowTextA(body,s->order_notice_text,sizeof(s->order_notice_text));
+    if(PostMessageW(window,WM_COMMAND,MAKEWPARAM(IDOK,BN_CLICKED),(LPARAM)confirm)){
+        s->startup_last_kind=kind;s->startup_last_window=(DWORD)(uintptr_t)window;
+        s->order_notice_kind=kind;s->order_notice_count++;
     }
     return 1;
 }
@@ -103,7 +129,8 @@ int confirm_document(ProbeState *s,HWND window,int allow_runtime){
     if(pid!=s->pid||thread!=s->gui_thread||GetAncestor(window,GA_ROOT)!=window)return 0;
     WCHAR cls[64],title[128];GetClassNameW(window,cls,64);
     int title_length=GetWindowTextLengthW(window);
-    if(title_length>=128||GetWindowTextW(window,title,128)!=title_length)return 0;
+    /* ANSI 窗口的长度是缓冲区上界，中文标题可能估为 8、实际读取为 4。 */
+    if(title_length>=128||GetWindowTextW(window,title,128)<=0)return 0;
     if(wcscmp(cls,L"#32770"))return 0;
     DWORD kind=0;
     if(!wcscmp(title,L"快期隐私政策")||!wcscmp(title,L"隐私政策"))kind=1;
@@ -111,7 +138,13 @@ int confirm_document(ProbeState *s,HWND window,int allow_runtime){
     if(!wcscmp(title,L"快速配置向导"))kind=3;
     if(!wcscmp(title,L"确认结算单"))kind=4;
     if(!wcscmp(title,L"保证金监控中心"))kind=5;
-    if(notice_title(title))kind=6;
+    if(notice_title(title,L"成交通知"))kind=6;
+    if(notice_title(title,L"下单失败"))kind=7;
+    if(notice_title(title,L"下单成功"))kind=8;
+    if(notice_title(title,L"撤单成功(即时单)"))kind=9;
+    if(notice_title(title,L"撤单失败(即时单)"))kind=10;
+    if(notice_title(title,L"撤单成功"))kind=11;
+    if(notice_title(title,L"撤单失败"))kind=12;
     if(!kind||(kind>=4&&!allow_runtime)||(!startup&&kind<4))return 0;
     if(kind>=4){
         HWND owner=GetWindow(window,GW_OWNER);
@@ -120,6 +153,7 @@ int confirm_document(ProbeState *s,HWND window,int allow_runtime){
             ||!matches_main(s,owner)||!IsWindowVisible(window))return 0;
     }
     if(kind==6)return trade_notice(s,window);
+    if(kind>=7&&kind<=12)return order_notice(s,window,kind);
     HWND confirm=GetDlgItem(window,IDOK),cancel=GetDlgItem(window,IDCANCEL);
     int command=IDOK;
     if(kind==5){

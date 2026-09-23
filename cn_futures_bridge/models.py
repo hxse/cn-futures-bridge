@@ -83,12 +83,30 @@ class PositionQuery(RequestModel):
 
 
 class OrderQuery(PositionQuery):
-    order_sys_id: Identifier | None = None
+    order_sys_id: Identifier | None = Field(default=None,
+        description="填下单响应的 order_id，保持字符串原样；建议同时带原交易所和合约。不能与完整引用字段组混用。",
+        examples=["648294"])
+    trading_day: Annotated[str, Field(pattern=r"^[0-9]{8}$")] | None = Field(default=None,
+        description="填 identity.trading_day；只支持当前终端交易日。须同时传前置、会话、报单引用、交易所和合约。",
+        examples=["20260924"])
+    front_id: Annotated[int, Field(strict=False, ge=0, le=2147483647)] | None = Field(default=None,
+        description="填 identity.front_id；仅用于完整引用查询，不能单独定位订单。", examples=[3])
+    session_id: Annotated[int, Field(strict=False, ge=-2147483648, le=2147483647)] | None = Field(default=None,
+        description="填 identity.session_id，允许负数；与其他完整引用字段一起传入。", examples=[123])
+    order_ref: Annotated[str, Field(pattern=r"^[0-9]{1,12}$")] | None = Field(default=None,
+        description="填 identity.order_ref，保留字符串及前导零；不是交易所订单号，必须与其余身份字段一起传入。",
+        examples=["18"])
     insert_time_start: TimeText | None = None
     insert_time_end: TimeText | None = None
 
     @model_validator(mode="after")
     def ordered_interval(self) -> Self:
+        reference = (self.trading_day, self.front_id, self.session_id, self.order_ref)
+        if any(value is not None for value in reference):
+            if any(value is None for value in reference) or not self.exchange_id or not self.instrument_id:
+                raise ValueError("按引用查询须完整提供交易日、前置、会话、报单引用、交易所和合约")
+            if self.order_sys_id is not None:
+                raise ValueError("报单引用与交易所订单号不能混用")
         if self.insert_time_start and self.insert_time_end and self.insert_time_start > self.insert_time_end:
             raise ValueError("时间过滤起点不得晚于终点，不支持跨午夜区间")
         return self

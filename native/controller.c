@@ -46,6 +46,10 @@ int wmain(int argc,WCHAR **argv){
         else if(!strcmp(command,"session"))action=SESSION;
         else if(!strcmp(command,"product"))action=PRODUCT;
         else if(!strcmp(command,"instrument"))action=INSTRUMENT;
+        else if(!strcmp(command,"parked"))action=PARKED;
+        else if(!strcmp(command,"receipt"))action=RECEIPT;
+        else if(!strcmp(command,"track"))action=TRACKING;
+        else if(!strcmp(command,"menu"))action=MENU;
         else if(!strcmp(command,"export"))action=EXPORT;
         else if(!strcmp(command,"import"))action=IMPORT;
         else if(!strcmp(command,"inspect"))action=INSPECT;
@@ -66,7 +70,7 @@ int wmain(int argc,WCHAR **argv){
             Sleep(10);
         }while(TRUE);
         if(!main_window||target_thread!=previous_thread){puts("{\"error\":91,\"done\":true,\"data\":{}}");fflush(stdout);break;}
-        if(action==SESSION||action==PRODUCT||action==INSTRUMENT)sscanf(line,"%31s %2047[^\r\n]",command,argument);
+        if(action==SESSION||action==PRODUCT||action==INSTRUMENT||action==PARKED||action==RECEIPT||action==TRACKING)sscanf(line,"%31s %2047[^\r\n]",command,argument);
         else if(action!=WINDOWS&&action!=STOP)sscanf(line,"%31s %lu %2047[^\r\n]",command,&target,argument);
         HWND window=target?(HWND)(uintptr_t)target:main_window;DWORD pid=0;
         GetWindowThreadProcessId(window,&pid);
@@ -89,6 +93,8 @@ int wmain(int argc,WCHAR **argv){
         print_hex(s->message_text);
         printf("\",\"startup_privacy_count\":%lu,\"startup_terms_count\":%lu,\"startup_wizard_count\":%lu,\"settlement_count\":%lu,\"information_close_count\":%lu,",
                s->startup_privacy_count,s->startup_terms_count,s->startup_wizard_count,s->settlement_count,s->information_close_count);
+        printf("\"order_notice_count\":%lu,\"order_notice_kind\":%lu,\"order_notice_hex\":\"",s->order_notice_count,s->order_notice_kind);
+        print_hex(s->order_notice_text);printf("\",");
         printf("\"trade_notice_check_count\":%lu,\"trade_notice_checked_count\":%lu,\"trade_notice_confirm_count\":%lu,\"trade_notice_closed_count\":%lu,\"data\":%s}\n",
                s->trade_notice_check_count,s->trade_notice_checked_count,s->trade_notice_confirm_count,s->trade_notice_closed_count,
                s->output[0]&&!s->error?s->output:"{}");fflush(stdout);

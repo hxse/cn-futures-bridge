@@ -15,7 +15,7 @@ FastAPI 提供三个 POST、五个 GET 业务路由，统一使用 `/cfb` 前缀
 | POST | /cfb/create_market_order | mode、exchange_id、instrument_id、side、offset、volume、hedge_flag、invest_unit_id |
 | POST | /cfb/create_limit_order | 市价请求的公共字段，加 price、time_in_force |
 | POST | /cfb/cancel_order | mode、exchange_id、instrument_id、invest_unit_id，以及 by 指定的一组身份字段 |
-| GET | /cfb/fetch_orders | mode；可选 exchange_id、instrument_id、order_sys_id、insert_time_start、insert_time_end；invest_unit_id |
+| GET | /cfb/fetch_orders | mode；可选 exchange_id、instrument_id、order_sys_id，或完整引用组 trading_day/front_id/session_id/order_ref；insert_time_start、insert_time_end；invest_unit_id |
 | GET | /cfb/fetch_trades | mode；可选 exchange_id、instrument_id、trade_id、trade_time_start、trade_time_end；invest_unit_id |
 | GET | /cfb/fetch_positions | mode；可选 exchange_id、instrument_id；invest_unit_id |
 | GET | /cfb/fetch_balance | mode、currency_id |
@@ -31,7 +31,7 @@ POST 只接受 application/json 对象；GET 使用 query。未知 JSON/query �
 
 side 为 buy/sell，offset 为 open/close/close_today/close_yesterday；volume 是 1～2147483647 的严格整数，拒绝 bool、数字字符串和小数。price 为正的有限 JSON number，拒绝数字字符串、NaN、Infinity；执行时核对可取得的报价步长与涨跌停，不自动改价或改手数。
 
-time_in_force 为 GFD/IOC/FOK；hedge_flag 为 speculation/arbitrage/hedge。当前基础交易路径为限价 GFD、投机、开仓或普通平仓。原生市价、IOC/FOK、指定平今/平昨和非投机分支尚未核验，返回 501/CAPABILITY_NOT_SUPPORTED；不以对价限价或发送后撤单模拟这些语义。
+time_in_force 为 GFD/IOC/FOK；hedge_flag 为 speculation/arbitrage/hedge。支持模拟市价、限价 GFD/IOC、投机、开仓或普通平仓。模拟市价以买入涨停价、卖出跌停价的限价 IOC 实现，实际参数由 execution 返回，见 [限价模拟市价](market_orders.md)。FOK、指定平今/平昨和非投机分支仍返回 501/CAPABILITY_NOT_SUPPORTED；不以 GFD 或发送后主动撤单冒充 IOC/FOK。
 
 撤单必须声明 by：exchange_order 要求 order_sys_id；session_order 要求 front_id、session_id、order_ref。字段组不能混用。订单编号保留原始空格及字符串身份，长度 1～20，至少包含一个非空格可见 ASCII 字符；不会转整数、补空格或移除前缀。front_id 为 0～2147483647，session_id 为有符号 32 位整数，order_ref 为 1～12 位数字字符串。当前只启用交易所编号的唯一目标定位；会话方式尚未核验。
 
@@ -47,17 +47,67 @@ trade_id 与 order_sys_id 使用相同标识规则。时间过滤为严格 HH:MM
 
 三个 POST 支持可选 Idempotency-Key，1～128 个非空格可见 ASCII 字符。同账户/环境/券商中，同键同参数重放原响应和逻辑编号，同键不同参数 409，原请求尚在执行 409；不同环境和券商的结果隔离，无键的同参数请求仍是独立指令。未知提交不自动到期或重新发送。
 
-正常本地提交且收尾确认后返回 202：
+正常本地提交且收尾确认后返回 202，包含 request_id、submission_status、order_id、identity、execution、verification。HTTP 202 本身不是成交确认。
+
+submitted 表示本地动作完成，不代表柜台接受或成交。限价 GFD 通过 CSV 导入；限价 IOC 和模拟市价通过下单板生成手动预埋单。开平仓共用实际发送引用捕获：identity 包含 exchange_id、instrument_id、trading_day、front_id、session_id、order_ref。order_id 来自该完整引用的真实订单，尚未分配时为 null。发送前保存 CSV 基线，发送后默认最多 3 轮、轮间 100 ms 精确回读，已确认时提前结束；全程占用同一 FIFO，只发送一次。
+
+POST 的 execution.kind 为 limit/emulated_market/cancel，price 和 time_in_force 为实际参数；撤单两者为 null。verification 包含 attempts、correlation、orders、trades、positions_before、positions_after 和 error_code。开平仓 source=terminal_csv_and_native，撤单 source=terminal_csv。
+
+- status=observed：精确订单达到约定状态，其成交量与已关联 CSV 成交核对一致；拒单也可为 observed，须读取 orders[].status，不能把 observed 当成交成功。持仓仍是独立前后快照，其他操作也可能改变仓位。
+- pending：限定轮数内状态/成交尚未到齐；ambiguous：精确引用或编号出现冲突；unavailable：读取失败，error_code 指明原因，未取得的后仓位为 null。
+- correlation=order_ref：用捕获的真实引用和会话精确定位原生订单，取得交易所编号后核对同号 CSV。没有交易所编号的拒单使用该引用对应的原生订单回报；只返回原生成交对象明确关联到该订单的 CSV 成交，并填写其 order_id。
+- correlation=order_id：仅用于已有精确编号的撤单，orders 是该编号对应的完整委托状态。已成交和已撤销分别如实返回，活动列表消失不直接判为撤单成功。
+
+通知只清障和记录，不能改变 submission_status 或 verification。引用捕获缺失、重复或错配返回 unknown，不回退到参数候选；已捕获引用及订单号保存到防重发记录，进程中断的错误响应仍保留已知标识。下单前后 CSV 均使用新文件。同幂等键重放原结果，后续 GET 才取得新快照。
+
+升级前保存的幂等响应原样重放，可能保留 snapshot_delta 和缺失的 identity，不重新认领历史请求。按引用查询针对终端现有记录；重启后终端可能不再保存纯本地拒单，此时空列表仅表示当前快照未找到，不能推断未曾提交或失败。
+
+一个结果待确认的市价模拟响应示例：
 
 ```json
-{"request_id":"cfb-123","submission_status":"submitted","order_id":null}
+{"request_id":"cfb-example","submission_status":"submitted","order_id":null,"identity":{"exchange_id":"DCE","instrument_id":"m2701","trading_day":"20260924","front_id":3,"session_id":123,"order_ref":"18"},"execution":{"kind":"emulated_market","price":3618.0,"time_in_force":"IOC"},"verification":{"source":"terminal_csv_and_native","status":"pending","correlation":"order_ref","attempts":3,"orders":[],"trades":[],"positions_before":[],"positions_after":[],"error_code":null}}
 ```
 
-submitted 表示本地动作完成，不代表柜台接受或成交。导入回读、快捷键发送、一次订单 CSV 观察之后即收尾，不轮询柜台。可靠订单编号暂不可得时保持 null；不能根据相同价格或相近时间认领订单。
+价格仅为格式示例。positions_after=[] 表示成功读到空持仓，不表示本次报单失败。
+
+### 调用方再次确认订单状态
+
+开仓和平仓使用同一套查询方式，不需要新的确认路由。优先将下单响应的 **order_id 原样传给 GET /cfb/fetch_orders 的 order_sys_id**，同时带原请求的 mode、exchange_id、instrument_id。两个字段名称不同，但值是同一个真实交易所编号；CFB 的 request_id 仅供日志追踪，不能作为订单编号。
+
+以下编号仅展示格式，须替换为实际响应值：
+
+```bash
+curl 'http://127.0.0.1:45173/cfb/fetch_orders?mode=sandbox&exchange_id=DCE&instrument_id=m2701&order_sys_id=648294'
+```
+
+order_id 为 null 不代表提交失败。若已返回 identity，就完整传入其中的六个字段（exchange_id、instrument_id、trading_day、front_id、session_id、order_ref），另带原 mode，且不传 order_sys_id。两种查询方式互斥；不能只凭 order_ref 定位订单。按引用查询只支持当前终端交易日，缺少成组字段报 422，其他交易日报 501，不用空列表掩盖不支持的历史查询。结果附 identity，source=terminal_csv_and_native；引用存在但 CSV 尚未更新时返回原生事实及 changing。
+
+```bash
+curl 'http://127.0.0.1:45173/cfb/fetch_orders?mode=sandbox&exchange_id=DCE&instrument_id=m2701&trading_day=20260924&front_id=3&session_id=123&order_ref=18'
+```
+
+使用实际响应里的 identity，不能照抄示例编号。原生编号的定长前置空格在适配边界去除，以对齐 CSV；外部传入的 order_sys_id 保持原样，不擅自改变其身份。
+
+从 orders 数组读取目标订单的 status、filled_volume、remaining_volume，按以下含义确认：
+
+| status | 调用方判断 |
+| --- | --- |
+| filled | 全部成交 |
+| open | 挂单，尚未成交 |
+| partially_filled | 部分成交，仍有未成交部分 |
+| cancelled | 剩余部分已撤销；是否曾成交仍须读取 filled_volume |
+| rejected | 订单被拒绝；可能没有交易所编号 |
+| pending / unknown | 尚不能确认最终结果 |
+
+remaining_volume 表示未成交手数，已撤单的剩余量不代表仍有活动挂单。consistency=stable 仅表示连续快照一致，不代表成交；verification.status=observed 仅表示约定状态及相关成交已核对，挂单和拒单也可被观察到。不要将这两个标记或 submission_status=submitted 当作 filled。
+
+orders=[] 只表示当前终端快照未找到，读取失败则报错；两者均不能证明从未提交。仅查询当前交易日，不把编号当作跨账户、跨交易日的全局定位键。未能确认时，可在调用方设置有限次数和间隔再次 GET；查询失败或 HTTP 非 2xx 不触发重新下单。错误响应若保留 order_id 或 identity，也可沿用上述查询方式；两者都缺失时需结合请求日志核对，不能凭参数相似认领其他订单。
+
+同 Idempotency-Key 重试 POST 只重放保存的旧响应，不刷新订单状态；确认最新状态必须调用 GET /cfb/fetch_orders。/docs 和 /openapi.json 的路由描述、查询参数与响应字段说明应直接呈现上述映射、两种查询示例及状态含义。
 
 每个响应携带 X-Request-ID 和 Cache-Control: no-store，头中编号与正文一致。幂等重放保留原编号；CFB 编号不能用作订单编号。后续通过订单、成交确认结果，持仓未变本身不能证明下单失败。
 
-查询返回 request_id、observed_at、source、trading_day，加 orders/trades/positions 数组或 balance 对象。observed_at 是读取时间，trading_day 来自终端且允许 null；缺少可信交易日时写操作不就绪。读取失败不返回旧快照、默认零或空数组。
+查询返回 request_id、observed_at、source、trading_day，加 orders/trades/positions 数组或 balance 对象。observed_at 是读取时间，trading_day 来自终端且允许 null；缺少可信交易日时写操作不就绪。读取失败不返回旧快照、默认零或空数组。三个 CSV GET 至少读取两次、最多配置轮数，以委托状态/数量、成交记录、持仓数量等业务字段核对；返回最新完整快照及 consistency=stable/changing，浮动盈亏不参与持仓稳定判断。changing 表示读取期间数据仍有变化，不是空数据或读取失败。
 
 订单包含订单号、交易所/合约、买卖/开平、总手数、成交/剩余手数、价格、状态、说明和时间。成交包含成交号、可空订单号、交易身份、手数/价格、时间及可空手续费/平仓盈亏。持仓按终端维度保留总仓、今昨仓、可平量、均价、保证金、盈亏，不能把可平量当总仓或强拆 CTP 行。
 
@@ -67,11 +117,11 @@ submitted 表示本地动作完成，不代表柜台接受或成交。导入回�
 
 ## 错误与能力
 
-错误包含 request_id、submission_status、order_id、error；error 包含 code、message、可空 details，参数问题 details 项为 loc/type/message。副作用前错误的 submission_status 为 null，明确本次拒绝为 rejected，影响不明为 unknown；已确认提交后的收尾错误保留 submitted。
+错误包含 request_id、submission_status、order_id、identity、error，以及可空 execution/verification；error 包含 code、message、可空 details，参数问题 details 项为 loc/type/message。副作用前错误的 submission_status 为 null，明确本次拒绝为 rejected，影响不明为 unknown；已确认提交后的收尾错误保留 submitted、已知标识和已取得的观察结果。
 
 | HTTP | 典型错误 |
 | --- | --- |
-| 409 | ENVIRONMENT_MISMATCH、ORDER_NOT_FOUND、ORDER_IDENTITY_AMBIGUOUS、IDEMPOTENCY_CONFLICT、OPERATION_IN_PROGRESS |
+| 409 | ENVIRONMENT_MISMATCH、ORDER_NOT_FOUND、ORDER_IDENTITY_AMBIGUOUS、MARKET_NOT_TRADING、IDEMPOTENCY_CONFLICT、OPERATION_IN_PROGRESS |
 | 422 | INVALID_ARGUMENTS、ORDER_REJECTED |
 | 429 | QUEUE_FULL |
 | 501 | CAPABILITY_NOT_SUPPORTED |

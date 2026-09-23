@@ -45,6 +45,22 @@ stop_container() {
         podman rm "$cfb_name"
     fi
 }
+print_connections() {
+    local cfb_base="http://127.0.0.1:$2"
+    printf '\n容器：%s (%s)\n' "$cfb_name" "$1"
+    printf 'API 文档：    %s/docs\n' "$cfb_base"
+    printf 'ReDoc 文档：  %s/redoc\n' "$cfb_base"
+    printf 'OpenAPI：     %s/openapi.json\n' "$cfb_base"
+    printf '服务状态：    %s/v1/status\n' "$cfb_base"
+    printf '存活检查：    %s/healthz\n' "$cfb_base"
+    printf '就绪检查：    %s/readyz\n' "$cfb_base"
+    printf '桌面截图：    %s/v1/desktop/screenshot\n' "$cfb_base"
+    if [[ "$1" == vnc ]]; then
+        printf 'VNC 网页：    http://127.0.0.1:%s/vnc.html\n' "$4"
+        printf 'VNC 客户端：  127.0.0.1:%s (TCP)\n' "$3"
+    fi
+    printf '\n启动与登录可能仍在进行；就绪检查返回 HTTP 200 表示终端已就绪。\n'
+}
 start_container() {
     variant "$1"
     local cfb_api cfb_vnc cfb_web cfb_data cfb_signature cfb_layout
@@ -62,7 +78,8 @@ start_container() {
             echo '启动配置已改变，请使用 just restart 或 just restart vnc；不会沿用或切换旧账户' >&2; exit 1;
         }
         [[ $(podman inspect --format '{{.State.Running}}' "$cfb_name") == true ]] || podman start "$cfb_name"
-        echo "服务已在运行，复用现有容器；API: http://127.0.0.1:$cfb_api/docs"
+        echo '服务已在运行，复用现有容器'
+        print_connections "$1" "$cfb_api" "$cfb_vnc" "$cfb_web"
         return
     fi
     local -a cfb_args=(run --detach --name "$cfb_name" --label cn-futures-bridge.managed=true
@@ -76,7 +93,7 @@ start_container() {
         cfb_args+=(--publish "127.0.0.1:$cfb_vnc:$cfb_vnc" --publish "127.0.0.1:$cfb_web:$cfb_web")
     fi
     podman "${cfb_args[@]}" "$cfb_target"
-    echo "API: http://127.0.0.1:$cfb_api/docs"
+    print_connections "$1" "$cfb_api" "$cfb_vnc" "$cfb_web"
 }
 
 cfb_command=${1:-help}

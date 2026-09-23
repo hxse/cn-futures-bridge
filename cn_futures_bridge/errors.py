@@ -3,6 +3,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from .results import OrderExecution, OrderIdentity, Verification
 
 Submission = Literal["submitted", "rejected", "unknown"]
 Capability = Literal["supported", "unsupported", "unverified"]
@@ -23,24 +24,31 @@ class ErrorDetail(BaseModel):
 class ErrorResponse(BaseModel):
     request_id: str
     submission_status: Submission | None = None
-    order_id: str | None = None
+    order_id: str | None = Field(default=None,
+        description="异常前已取得的真实订单编号；非 2xx 不表示未下单，可用 fetch_orders 的 order_sys_id 继续查询。")
+    identity: OrderIdentity | None = Field(default=None,
+        description="异常前已捕获的完整引用；无订单编号时可用六个字段及原 mode 查询 fetch_orders，禁止根据报错自动重发。")
     error: ErrorDetail
+    execution: OrderExecution | None = None
+    verification: Verification | None = None
 
 
 class BridgeError(Exception):
     def __init__(self, code: str, message: str, status: int = 503, *,
                  submission_status: Submission | None = None,
-                 order_id: str | None = None, details: list[FieldProblem] | None = None):
+                 order_id: str | None = None, identity: OrderIdentity | None = None,
+                 details: list[FieldProblem] | None = None):
         super().__init__(message)
         self.code = code
         self.status = status
         self.submission_status = submission_status
         self.order_id = order_id
+        self.identity = identity
         self.details = details
 
     def response(self, request_id: str) -> ErrorResponse:
         return ErrorResponse(request_id=request_id, submission_status=self.submission_status,
-                             order_id=self.order_id,
+                             order_id=self.order_id, identity=self.identity,
                              error=ErrorDetail(code=self.code, message=str(self), details=self.details))
 
 

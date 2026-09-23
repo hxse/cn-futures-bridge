@@ -12,7 +12,8 @@ static void add_window(HWND w) {
     if(count>=512){active->error=30;return;}
     char cls[80];GetClassNameA(w,cls,80);
     int control_id=GetDlgCtrlID(w);
-    int filter=(control_id>=3400&&control_id<3550)||(control_id>=4100&&control_id<4220);
+    int filter=(control_id>=3301&&control_id<=3325)
+        ||(control_id>=3400&&control_id<3550)||(control_id>=4100&&control_id<4220);
     if(!IsWindowVisible(w) && strcmp(cls,"ListCtrl") && !filter)return;
     if(count++)emit(active,",");
     RECT r;GetWindowRect(w,&r);
@@ -53,7 +54,8 @@ void gui_query(ProbeState *s,HWND window){
             s->trade_notice_window=0;s->trade_notice_phase=0;
         }
         /* 附属网页可能只隐藏并复用句柄；观察到关闭后结束本轮去重。 */
-        if(s->startup_last_kind==5&&!IsWindowVisible((HWND)(uintptr_t)s->startup_last_window)){
+        if((s->startup_last_kind==5||(s->startup_last_kind>=7&&s->startup_last_kind<=12))
+                &&!IsWindowVisible((HWND)(uintptr_t)s->startup_last_window)){
             s->startup_last_window=0;s->startup_last_kind=0;
         }
         active=s;count=0;document_pending=0;emit(s,"{\"windows\":[");EnumWindows(top,0);
@@ -70,7 +72,15 @@ void gui_query(ProbeState *s,HWND window){
     }
     WCHAR title[256];GetWindowTextW(GetAncestor(window,GA_ROOT),title,256);
     char cls[80];GetClassNameA(window,cls,80);
-    if(wcscmp(title,L"用户登录")){s->error=32;return;}
+    HWND parent=GetParent(window),panel=GetParent(parent);
+    char parent_class[80];GetClassNameA(parent,parent_class,sizeof(parent_class));
+    int id=GetDlgCtrlID(window);
+    /* 市价填参仅放行标准下单板的三个编辑框，不扩展成任意窗口写入。 */
+    int order_edit=s->action==SET_TEXT && matches_main(s,window) && !strcmp(cls,"Edit")
+        && GetDlgCtrlID(parent)==id && GetDlgItem(panel,3320) && GetDlgItem(panel,3324)
+        && ((id==3301&&!strcmp(parent_class,"Q7InstrumentIDCtrl"))
+            ||((id==3302||id==3303)&&!strcmp(parent_class,"Q7CustomCtrl")));
+    if(wcscmp(title,L"用户登录")&&!order_edit){s->error=32;return;}
     if(s->action==SET_TEXT){
         if(strcmp(cls,"Edit")&&strcmp(cls,"ComboBox")){s->error=32;return;}
         unsigned char decoded[512];size_t n=strlen(s->argument);

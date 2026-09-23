@@ -52,6 +52,9 @@ class NativeReply(BaseModel):
     trade_notice_checked_count: int = 0
     trade_notice_confirm_count: int = 0
     trade_notice_closed_count: int = 0
+    order_notice_count: int = 0
+    order_notice_kind: int = 0
+    order_notice_hex: str = ""
 
 
 class Window(BaseModel):
@@ -110,6 +113,8 @@ class InstrumentInfo(BaseModel):
     tick: float = 0
     lower: float = 0
     upper: float = 0
+    limit_min_volume: int = 0
+    limit_max_volume: int = 0
 
     @property
     def name(self) -> str:
@@ -125,6 +130,7 @@ class NativeClient:
         self.buffer = b""
         self.startup_counts = (0, 0, 0, 0, 0)
         self.notice_counts = (0, 0, 0, 0)
+        self.order_notice_count = 0
         self.startup_deadline: float | None = None
         self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
                         WINEPREFIX=str(settings.wine_prefix), WINEDEBUG="-all",
@@ -209,6 +215,12 @@ class NativeClient:
                 LOG.info("已投递文档窗口处理请求：%s，累计 %s 次", name, current,
                          extra={"step": "document_confirmation", "event": "submitted"})
         self.startup_counts = counts
+        if result.order_notice_count > self.order_notice_count:
+            title = {7: "下单失败", 8: "下单成功", 9: "撤单成功(即时单)",
+                     10: "撤单失败(即时单)", 11: "撤单成功", 12: "撤单失败"}.get(result.order_notice_kind, "交易结果通知")
+            LOG.info("终端结果通知已确认（仅清障，不推断交易状态）：%s；%s", title, decode(result.order_notice_hex),
+                     extra={"step": "order_notice", "event": "acknowledged"})
+        self.order_notice_count = result.order_notice_count
         notice_counts = (result.trade_notice_check_count, result.trade_notice_checked_count,
                          result.trade_notice_confirm_count, result.trade_notice_closed_count)
         events = (("请求勾选不再提示成交通知", "checkbox_submitted"),
@@ -224,7 +236,10 @@ class NativeClient:
         if not result.done or result.error == 90:
             self.poisoned = True
             raise BridgeError("GUI_UNRESPONSIVE", "GUI 调用尚未确认结束，暂停执行")
-        if result.error in (1, 40, 43):
+        if result.error == 71:
+            self.poisoned = True
+            raise BridgeError("GUI_RESET_FAILED", "报单引用观察入口未确认恢复，隔离执行器")
+        if result.error in (1, 40, 43, 70):
             raise BridgeError("SERVICE_NOT_READY", f"固定版本或必需原生符号未就绪，代码 {result.error}")
         if result.error:
             raise BridgeError("TERMINAL_DATA_INVALID", f"原生适配拒绝操作，代码 {result.error}", 502)

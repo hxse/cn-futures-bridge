@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from .dispatch import Job
 from .errors import BridgeError, FieldProblem
 from .models import Action, Operation, RequestModel
-from .results import Reply
+from .results import OrderIdentity, Reply
 from .service import BridgeService
 from .terminal.policy import validate_capability
 
@@ -42,6 +42,8 @@ def response(request: Request, reply: Reply) -> JSONResponse:
     request.state.request_id = reply.request_id
     request.state.submission_status = reply.body.get("submission_status")
     request.state.order_id = reply.body.get("order_id")
+    identity = reply.body.get("identity")
+    request.state.identity = OrderIdentity.model_validate(identity) if identity is not None else None
     return JSONResponse(status_code=reply.status, content=reply.body)
 
 

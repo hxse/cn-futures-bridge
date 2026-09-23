@@ -37,7 +37,8 @@ def create_app(service: BridgeService, *, manage_lifecycle: bool = True) -> Fast
     app = FastAPI(title="cn-futures-bridge", version="0.1.0", lifespan=lifespan,
         description="单账户 SimNow/华安实盘终端桥接。mode 必须匹配启动环境，否则返回 409，不能自动切换。"
                     "输入尽量对齐 CTP 路由，返回使用 CFB 模型。"
-                    "submitted 仅表示本地提交；通过订单和成交查询确认后续结果。HTTP 无鉴权，仅在本机发布。")
+                    "submitted 仅表示本地提交；下单返回的 order_id 可传给 GET /cfb/fetch_orders 的 order_sys_id 再次确认状态，"
+                    "同时带原 mode、交易所和合约。尚无订单编号时可用完整 identity 查询。HTTP 无鉴权，仅在本机发布。")
     app.include_router(business_router(service))
 
     @app.middleware("http")
@@ -53,7 +54,8 @@ def create_app(service: BridgeService, *, manage_lifecycle: bool = True) -> Fast
             if effect is None and job and job.started and job.operation.action.startswith(("create_", "cancel_")):
                 effect = "unknown"
             error = BridgeError("INTERNAL_ERROR", "请求处理异常，查看追踪日志", 500,
-                                submission_status=effect, order_id=getattr(request.state, "order_id", None))
+                                submission_status=effect, order_id=getattr(request.state, "order_id", None),
+                                identity=getattr(request.state, "identity", None))
             response = JSONResponse(status_code=500, content=error.response(request_id(request)).model_dump())
         response.headers["X-Request-ID"] = request_id(request)
         response.headers["Cache-Control"] = "no-store"

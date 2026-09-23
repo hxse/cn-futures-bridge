@@ -9,11 +9,12 @@ EXCHANGE_NUMBERS = {"SHFE": 1, "DCE": 2, "CZCE": 3, "CFFEX": 4, "INE": 5, "GFEX"
 
 def capabilities() -> dict[str, Capability]:
     result = initial_capabilities()
-    for name in ("create_limit_order", "cancel_order", "fetch_orders", "fetch_trades", "fetch_positions",
+    for name in ("create_market_order", "create_limit_order", "cancel_order", "fetch_orders", "fetch_trades", "fetch_positions",
                  "fetch_balance", "fetch_trading_status"):
         result[name] = "supported"
     result["invest_unit"] = "unsupported"
     result["non_cny_balance"] = "unsupported"
+    result["limit_order_ioc"] = "supported"
     return result
 
 
@@ -28,10 +29,8 @@ def validate_capability(request: RequestModel, settings: Settings) -> None:
     if isinstance(request, CancelBySession):
         raise BridgeError("CAPABILITY_NOT_SUPPORTED", "会话编号撤单尚未核验", 501)
     if isinstance(request, MarketOrder):
-        if not isinstance(request, LimitOrder):
-            raise BridgeError("CAPABILITY_NOT_SUPPORTED", "原生市价模式尚未核验", 501)
-        if request.time_in_force != "GFD":
-            raise BridgeError("CAPABILITY_NOT_SUPPORTED", "IOC/FOK 模式尚未核验", 501)
+        if isinstance(request, LimitOrder) and request.time_in_force == "FOK":
+            raise BridgeError("CAPABILITY_NOT_SUPPORTED", "FOK 模式尚未核验", 501)
         if request.offset in ("close_today", "close_yesterday"):
             raise BridgeError("CAPABILITY_NOT_SUPPORTED", "指定今昨仓的闭环尚未核验", 501)
         if request.hedge_flag != "speculation":

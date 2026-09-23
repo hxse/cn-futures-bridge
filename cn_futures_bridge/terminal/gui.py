@@ -69,11 +69,11 @@ class Gui:
         return matches[0]
 
     def dialogs(self, snapshot: Windows | None = None) -> list[Window]:
-        snapshot = snapshot or self.native.windows()
+        snapshot = snapshot or self.managed_snapshot()
         return [w for w in snapshot.windows if w.root == w.hwnd and w.class_name == "#32770"
                 and w.visible and w.text]
 
-    def baseline(self) -> Windows:
+    def managed_snapshot(self) -> Windows:
         # 已知结算单和附属网页仅由持有执行权的流程处理；暂停时不轮询。
         deadline = self.native.startup_deadline or time.monotonic() + self.timeout
         if time.monotonic() >= deadline:
@@ -85,11 +85,15 @@ class Gui:
                 raise BridgeError("QUERY_TIMEOUT", "文档确认未在期限内完成", 504)
             time.sleep(self.interval)
             snapshot = self.native.managed_windows()
+        if pending:
+            LOG.info("已识别通知或文档已关闭", extra={"step": "document_confirmation", "event": "end"})
+        return snapshot
+
+    def baseline(self) -> Windows:
+        snapshot = self.managed_snapshot()
         main = self.main(snapshot)
         if not main.enabled or self.dialogs(snapshot) or snapshot.flags & 4:
             raise BridgeError("GUI_RESET_FAILED", "存在未归属本次操作的窗口或菜单，请暂停后人工核对")
-        if pending:
-            LOG.info("已识别窗口已关闭，界面基线恢复", extra={"step": "document_confirmation", "event": "end"})
         return snapshot
 
     def grid(self, table: str) -> Window:
@@ -150,7 +154,7 @@ class Gui:
             raise BridgeError("GUI_RESET_FAILED", "资金查询按钮未取得焦点")
         self.key("space")
         self.wait(lambda: bool(self.dialogs()), "资金查询窗口未按时出现")
-        snapshot = self.native.windows()
+        snapshot = self.managed_snapshot()
         dialogs = self.dialogs(snapshot)
         if len(dialogs) != 1:
             raise BridgeError("GUI_RESET_FAILED", "资金查询出现未知窗口组合")

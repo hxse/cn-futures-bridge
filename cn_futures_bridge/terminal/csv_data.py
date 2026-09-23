@@ -109,20 +109,20 @@ def order_row(row: dict[str, str]) -> Order:
     total = required_volume(row, "报单手数")
     filled = required_volume(row, "成交手数")
     remaining = required_volume(row, "未成交手数")
-    if filled > total or remaining > total:
+    if filled + remaining > total:
         raise invalid("委托数量关系无效")
     raw = row["挂单状态"].strip()
     message = row.get("详细状态", "").strip()
     status: Literal["pending", "open", "partially_filled", "filled", "cancelled", "rejected", "unknown"]
-    if raw in ("错单", "废单", "拒绝") or any(word in message for word in ("不足", "禁止", "拒绝", "报单失败", "不允许", "无效", "不合法")):
+    if raw in ("错单", "废单", "拒绝") or any(word in message for word in ("不足", "禁止", "拒绝", "报单失败", "下单失败", "不允许", "无效", "不合法")):
         status = "rejected"
-    elif "撤" in raw:
+    elif "撤" in raw or (not raw and "已撤单" in message):
         status = "cancelled"
     elif total > 0 and filled == total:
         status = "filled"
     elif filled > 0 and remaining > 0:
         status = "partially_filled"
-    elif raw in ("未成交", "未成", "排队中", "已报", "挂单中"):
+    elif raw in ("未成交", "未成", "排队中", "已报", "挂单中") or (not raw and message.startswith("未成交报单已提交")):
         status = "open"
     elif not raw or raw in ("报单中", "待报", "未报"):
         status = "pending"
@@ -130,7 +130,8 @@ def order_row(row: dict[str, str]) -> Order:
         status = "unknown"
     return Order(order_id=row["报单编号"] or None, exchange_id=exchange, instrument_id=instrument,
                  side=side, offset=OFFSETS.get(row["开平"].strip(), "unknown"), volume=total,
-                 filled_volume=filled, remaining_volume=remaining, price=amount(row, "报单价格"),
+                 filled_volume=filled, remaining_volume=remaining,
+                 price=None if re.fullmatch(r"市价(?:/\d+(?:\.\d+)?)?", row["报单价格"].strip()) else amount(row, "报单价格"),
                  status=status, status_message=message or None, order_time=row["报单时间"] or None)
 
 
@@ -152,10 +153,16 @@ def position_row(row: dict[str, str]) -> Position:
     if row.get("投保", "").strip() == "投机": hedge = "speculation"
     elif row.get("投保", "").strip() == "套利": hedge = "arbitrage"
     elif row.get("投保", "").strip() in ("保值", "套保"): hedge = "hedge"
-    return Position(exchange_id=exchange, instrument_id=instrument, direction="long" if side == "buy" else "short",
+    result = Position(exchange_id=exchange, instrument_id=instrument, direction="long" if side == "buy" else "short",
                     hedge_flag=hedge, volume=required_volume(row, "总持仓"), today_volume=volume(row, "今仓", optional=True),
                     yesterday_volume=volume(row, "昨仓", optional=True), available_volume=volume(row, "可平量", optional=True),
                     average_price=amount(row, "持仓均价"), margin=amount(row, "实收保证金"), profit=amount(row, "持仓盈亏"))
+    if result.available_volume is not None and result.available_volume > result.volume:
+        raise invalid("可平量大于总持仓")
+    if result.today_volume is not None and result.yesterday_volume is not None:
+        if result.today_volume + result.yesterday_volume != result.volume:
+            raise invalid("今昨仓之和不等于总持仓")
+    return result
 
 
 def matches(row: Order | Trade | Position, query: PositionQuery) -> bool:

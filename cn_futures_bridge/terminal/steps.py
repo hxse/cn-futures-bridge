@@ -8,6 +8,9 @@ import time
 
 from ..errors import BridgeError, Submission
 from ..journal import Journal
+from .order_form import FormState
+from .native import Session, Window
+from ..results import OrderExecution, OrderIdentity
 
 LOG = logging.getLogger(__name__)
 
@@ -21,6 +24,14 @@ class Steps:
         self.writes = action in ("create_market_order", "create_limit_order", "cancel_order")
         self.effect: Submission | None = None
         self.owned_row: dict[str, str] | None = None
+        self.form_state: FormState | None = None
+        self.market_dialog: Window | None = None
+        self.execution: OrderExecution | None = None
+        self.session: Session | None = None
+        self.parked_id: int | None = None
+        self.identity: OrderIdentity | None = None
+        self.order_id: str | None = None
+        self.capture_armed = False
         self.counter = 0
 
     def path(self, table: str) -> Path:
@@ -32,7 +43,8 @@ class Steps:
         if effect:
             self.effect = effect
         if self.writes:
-            self.journal.phase(self.request_id, phase, effect=effect, session=session, artifact=self.directory)
+            self.journal.phase(self.request_id, phase, effect=effect, session=session, artifact=self.directory,
+                               identity=self.identity, order_id=self.order_id)
 
     @contextmanager
     def step(self, name: str) -> Iterator[None]:

@@ -24,17 +24,65 @@ def business_router(service: BridgeService) -> APIRouter:
         headers={"Retry-After": {"description": "有自动重连计划时建议等待的秒数，不保证届时恢复。",
                                   "schema": {"type": "integer", "minimum": 1}}})
     router = APIRouter(prefix="/cfb", tags=["cfb"], dependencies=[Depends(check_envelope)], responses=errors)
-    submit_description = ("完成本地提交和界面收尾后返回 202；submitted 不代表柜台接受或成交。"
-                          "请独立查询订单与成交，未知结果不要更换幂等键重发。")
+    submit_description = ("通知只清障，不参与交易状态判断。开平仓捕获实际报单引用并返回 identity、真实 order_id；"
+                          "按完整引用关联订单及其成交，再有界回读 CSV。撤单使用精确订单号。"
+                          "HTTP 202、submitted 和 verification.status=observed 均不等于全部成交，须读取订单 status 和 filled_volume。\n\n"
+                          "**再次确认状态**：调用 GET /cfb/fetch_orders，把本次返回的 order_id 原样传给 order_sys_id，"
+                          "同时带上原请求的 mode、exchange_id、instrument_id。order_id 是字符串，不能当数字处理。"
+                          "若 order_id=null，但 identity 已返回，则将 identity 的六个字段完整作为查询参数，"
+                          "并带原 mode；此时不传 order_sys_id。两种查询方式不能混用。\n\n"
+                          "示例编号仅展示格式，请替换为实际响应值：\n"
+                          "```bash\n"
+                          "curl 'http://127.0.0.1:45173/cfb/fetch_orders?mode=sandbox&exchange_id=DCE&instrument_id=m2701&order_sys_id=648294'\n"
+                          "```\n\n"
+                          "仅查询当前交易日。空结果或读取失败不能证明没有下单；非 2xx 也可能保留已提交事实及标识。"
+                          "未知结果不要更换幂等键重发；同幂等键只重放原响应，查询最新状态须调用上述 GET。\n\n")
+    orders_description = """查询终端当前交易日的订单快照，包含已成交、已撤单和终端仍保留的拒单。
+
+**按订单编号复查（优先）**：将开仓或平仓响应的 `order_id` 原样传入 `order_sys_id`，
+并带原请求的 `mode`、`exchange_id`、`instrument_id`。不要把 `request_id` 当订单编号。
+
+```bash
+curl 'http://127.0.0.1:45173/cfb/fetch_orders?mode=sandbox&exchange_id=DCE&instrument_id=m2701&order_sys_id=648294'
+```
+
+**尚无订单编号**：若下单响应的 `order_id=null` 且有 `identity`，完整传入其中的
+`exchange_id`、`instrument_id`、`trading_day`、`front_id`、`session_id`、`order_ref`，并带原 `mode`。
+不能同时传 `order_sys_id`，不能只传 `order_ref`；缺少成组字段返回 422，其他交易日返回 501。
+
+```bash
+curl 'http://127.0.0.1:45173/cfb/fetch_orders?mode=sandbox&exchange_id=DCE&instrument_id=m2701&trading_day=20260924&front_id=3&session_id=123&order_ref=18'
+```
+
+以上编号仅展示格式，使用实际响应值。完整引用查询返回的 `identity` 对应本次查询，
+`source=terminal_csv_and_native`；仅有原生事实而 CSV 未到齐时 `consistency=changing`。
+
+**如何确认**：读取 `orders[]` 中目标订单的 `status`、`filled_volume`、`remaining_volume`：
+
+| status | 含义 |
+| --- | --- |
+| filled | 全部成交 |
+| open | 挂单，尚未成交 |
+| partially_filled | 部分成交，仍有未成交部分 |
+| cancelled | 剩余部分已撤销；是否曾成交看 filled_volume |
+| rejected | 订单被拒绝 |
+| pending / unknown | 尚不能确认最终结果 |
+
+`remaining_volume` 表示未成交手数；已撤单的剩余量不代表仍有活动挂单。
+`consistency=stable` 只表示连续读取的快照一致，不代表全部成交；`changing` 表示尚未确认快照稳定。
+`orders=[]` 只表示当前快照未找到，不代表未曾提交；读取失败会报错，不能当作空订单或下单失败。
+拒单可能没有交易所编号，纯本地拒单也可能在终端重启后消失，不提供历史回补。
+需要后续确认时再次调用本 GET，不重复下单；持仓差值和界面通知不用于归属本次订单。
+"""
 
     @router.post("/create_market_order", response_model=SubmissionResult, status_code=202,
-                 summary="市价开仓或平仓", description=submit_description + "原生市价模式尚未核验，当前返回 501。")
+                 summary="模拟市价开仓或平仓", description=submit_description + "使用限价 IOC 模拟：买入涨停价、卖出跌停价，允许部分成交、剩余撤销，不保证成交；execution 返回实际限价。")
     async def create_market_order(request: Request, order: MarketOrder,
                                   idempotency_key: IdempotencyKey = None) -> JSONResponse:
         return await execute(service, request, "create_market_order", order, idempotency_key)
 
     @router.post("/create_limit_order", response_model=SubmissionResult, status_code=202,
-                 summary="限价开仓或平仓", description=submit_description + "基础分支为 GFD/投机，其他能力看 /v1/status。")
+                 summary="限价开仓或平仓", description=submit_description + "支持 GFD/IOC、投机；FOK 等未核验分支仍报能力错误。")
     async def create_limit_order(request: Request, order: LimitOrder,
                                  idempotency_key: IdempotencyKey = None) -> JSONResponse:
         return await execute(service, request, "create_limit_order", order, idempotency_key)
@@ -46,17 +94,17 @@ def business_router(service: BridgeService) -> APIRouter:
         return await execute(service, request, "cancel_order", order, idempotency_key)
 
     @router.get("/fetch_orders", response_model=OrdersResult, summary="查询订单",
-                description="当前终端交易日的完整委托快照，包含已成、已撤和拒单；source=terminal_csv。")
+                description=orders_description)
     async def fetch_orders(request: Request, query: Annotated[OrderQuery, Query()]) -> JSONResponse:
         return await execute(service, request, "fetch_orders", query)
 
     @router.get("/fetch_trades", response_model=TradesResult, summary="查询逐笔成交",
-                description="本账户成交明细；不能可靠关联的 order_id 为 null。")
+                description="重复读取成交 CSV，返回最新明细和 stable/changing 一致性；不能可靠关联的 order_id 为 null。")
     async def fetch_trades(request: Request, query: Annotated[TradeQuery, Query()]) -> JSONResponse:
         return await execute(service, request, "fetch_trades", query)
 
     @router.get("/fetch_positions", response_model=PositionsResult, summary="查询持仓",
-                description="按终端合约/方向/投保维度返回总仓、今昨仓及可平量；不复制 CTP 行划分。")
+                description="重复读取持仓 CSV，核对数量一致性并返回最新快照；浮动盈亏不参与稳定判断，仓位变化不直接证明本次订单成交。")
     async def fetch_positions(request: Request, query: Annotated[PositionQuery, Query()]) -> JSONResponse:
         return await execute(service, request, "fetch_positions", query)
 

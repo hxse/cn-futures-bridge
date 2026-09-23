@@ -37,7 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i
     && rm -rf /var/lib/apt/lists/*
 COPY native ./native
 RUN mkdir /native && i686-w64-mingw32-gcc -Wall -Wextra -Werror -Wno-unused-parameter -O2 -static-libgcc -shared \
-    native/hook.c native/import_scope.c native/common.c native/query.c native/gui.c native/startup.c \
+    native/hook.c native/import_scope.c native/common.c native/query.c native/gui.c native/startup.c native/market.c native/receipt.c native/tracking.c \
     -o /native/cfb-hook.dll -Wl,--kill-at \
     && i686-w64-mingw32-gcc -Wall -Wextra -Werror -Wno-unused-parameter -O2 -static-libgcc -municode \
     native/controller.c -o /native/cfb-controller.exe

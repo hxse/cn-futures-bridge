@@ -88,6 +88,7 @@ static void handle(HWND window) {
         || state->target!=(DWORD)(uintptr_t)window) return;
     state->error=0; state->win_error=0; state->gui_thread=GetCurrentThreadId();
     if (state->action==STOP) {
+        if(!receipt_stop()){state->error=71;state->done=1;return;}
         if (cbt_hook) { UnhookWindowsHookEx(cbt_hook); cbt_hook=NULL; }
         state->done=1;
         UnmapViewOfFile(state); state=NULL;
@@ -158,7 +159,10 @@ static void handle(HWND window) {
         }
     }
     if (!state->error && state->action>=SESSION && state->action<=INSTRUMENT) native_query(state,window);
-    if (!state->error && state->action>=WINDOWS) gui_query(state,window);
+    if (!state->error && state->action>=WINDOWS && state->action<=MANAGED_WINDOWS) gui_query(state,window);
+    if (!state->error && (state->action==PARKED || state->action==MENU)) market_query(state,window);
+    if (!state->error && state->action==RECEIPT) receipt_query(state,window);
+    if (!state->error && state->action==TRACKING) tracking_query(state,window);
     state->done=1;
 }
 

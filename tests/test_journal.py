@@ -5,7 +5,7 @@ from pathlib import Path
 from cn_futures_bridge.config import BridgeConfig, Settings
 from cn_futures_bridge.journal import Journal
 from cn_futures_bridge.models import Operation
-from cn_futures_bridge.results import Reply, SubmissionResult
+from cn_futures_bridge.results import OrderIdentity, Reply, SubmissionResult
 
 
 def test_replay_conflict_and_interrupted_import(tmp_path: Path) -> None:
@@ -33,3 +33,21 @@ def test_replay_conflict_and_interrupted_import(tmp_path: Path) -> None:
     assert interrupted and interrupted.body["submission_status"] == "unknown"
     assert interrupted.request_id == "cfb-interrupted"
     assert restarted.admit("cfb-new-request", operation, "two") == interrupted
+
+
+def test_captured_identity_survives_worker_and_service_restart(tmp_path: Path) -> None:
+    settings = Settings(bridge=BridgeConfig(data_dir=tmp_path))
+    operation = Operation(action="create_market_order", parameters={
+        "exchange_id": "DCE", "instrument_id": "m2701", "side": "buy", "offset": "open", "volume": 1})
+    identity = OrderIdentity(exchange_id="DCE", instrument_id="m2701", trading_day="20260924",
+                             front_id=3, session_id=-12, order_ref="18")
+    journal = Journal(settings)
+    journal.admit("cfb-captured", operation, "identity-key")
+    journal.phase("cfb-captured", "order_identified", effect="unknown", identity=identity, order_id="599159")
+    interrupted = journal.interrupted("cfb-captured")
+    assert interrupted.body["identity"] == identity.model_dump(mode="json")
+    assert interrupted.body["order_id"] == "599159"
+    assert Journal(settings).recover() == 1
+    replay = Journal(settings).lookup(operation, "identity-key")
+    assert replay and replay.body["identity"] == interrupted.body["identity"]
+    assert replay.body["order_id"] == "599159" and replay.body["submission_status"] == "unknown"

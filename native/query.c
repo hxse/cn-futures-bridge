@@ -84,6 +84,10 @@ void native_query(ProbeState *s,HWND window) {
         Amount upper=(Amount)(void *)GetProcAddress(core,"?Instrument_UpperLimitPrice@@YANPBUInstrument@@@Z");
         if(!tick||!lower||!upper){s->error=40;return;}
         emit(s,",\"tick\":%.17g,\"lower\":%.17g,\"upper\":%.17g",optional_price(tick(item)),optional_price(lower(item)),optional_price(upper(item)));
+        Number minimum=(Number)(void *)GetProcAddress(core,"?Instrument_MinLimitOrderVolume@@YAJPBUInstrument@@@Z");
+        Number maximum=(Number)(void *)GetProcAddress(core,"?Instrument_MaxLimitOrderVolume@@YAJPBUInstrument@@@Z");
+        if(!minimum||!maximum){s->error=40;return;}
+        emit(s,",\"limit_min_volume\":%ld,\"limit_max_volume\":%ld",minimum(item),maximum(item));
     }
     emit(s,"}");
 }

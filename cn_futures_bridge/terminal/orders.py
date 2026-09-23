@@ -5,30 +5,50 @@ import csv
 from decimal import Decimal
 import logging
 import re
+import time
 
 from ..errors import BridgeError
-from ..models import CancelByExchange, LimitOrder
+from ..models import CancelByExchange, LimitOrder, MarketOrder
 from ..results import SubmissionResult
 from .csv_data import PREORDER_HEADER, number
 from .gui import Gui
 from .native import InstrumentInfo, decode
 from .steps import Steps
+from .tracking import Receipt, parked_snapshot, validate_preorder
 
 LOG = logging.getLogger(__name__)
 Rows = list[dict[str, str]]
 ReadTable = Callable[[str, Steps], Rows]
 
 
-def same_parameters(row: dict[str, str], request: LimitOrder) -> bool:
-    return (row["类型"] == "预埋单(手动)" and row["合约"] == request.instrument_id
+def same_parameters(row: dict[str, str], request: MarketOrder) -> bool:
+    if not (row["类型"] == "预埋单(手动)" and row["合约"] == request.instrument_id
             and row["买卖"].strip() == ("买" if request.side == "buy" else "卖")
             and row["开平"] == ("开仓" if request.offset == "open" else "平仓")
-            and number(row["报单价格"]) == request.price and number(row["报单手数"]) == request.volume
-            and row["投保"] == "投机")
+            and number(row["报单手数"]) == request.volume and row["投保"] == "投机"):
+        return False
+    price = row["报单价格"].strip()
+    market_price = bool(re.fullmatch(r"市价(?:/\d+(?:\.\d+)?)?", price))
+    return (not market_price and number(price) == request.price) if isinstance(request, LimitOrder) else market_price
 
 
 def local_identity(row: dict[str, str]) -> tuple[str, ...]:
     return tuple(row[key] for key in PREORDER_HEADER if key not in ("状态", "详细状态"))
+
+
+def validate_limit(request: LimitOrder, info: InstrumentInfo) -> None:
+    tick = Decimal(str(info.tick))
+    if not tick.is_finite() or tick <= 0:
+        raise BridgeError("SERVICE_NOT_READY", "合约最小变动价位尚未就绪")
+    if info.limit_min_volume < 1 or info.limit_max_volume < info.limit_min_volume:
+        raise BridgeError("SERVICE_NOT_READY", "限价最小/最大手数资料无效")
+    if not info.limit_min_volume <= request.volume <= info.limit_max_volume:
+        raise BridgeError("INVALID_ARGUMENTS", "手数超出终端限价手数范围，不自动拆单", 422)
+    if request.price % tick:
+        raise BridgeError("INVALID_ARGUMENTS", "价格不是最小变动价位的整数倍", 422)
+    if (info.lower > 0 and request.price < Decimal(str(info.lower))) or (
+            info.upper > 0 and request.price > Decimal(str(info.upper))):
+        raise BridgeError("INVALID_ARGUMENTS", "价格超出终端当前涨跌停范围", 422)
 
 
 class OrderActions:
@@ -37,18 +57,12 @@ class OrderActions:
         self.read = read
 
     def limit(self, request: LimitOrder, info: InstrumentInfo, steps: Steps) -> SubmissionResult:
-        tick = Decimal(str(info.tick))
-        if tick <= 0:
-            raise BridgeError("SERVICE_NOT_READY", "合约最小变动价位尚未就绪")
-        if request.price % tick:
-            raise BridgeError("INVALID_ARGUMENTS", "价格不是最小变动价位的整数倍", 422)
-        if (info.lower > 0 and request.price < Decimal(str(info.lower))) or (
-                info.upper > 0 and request.price > Decimal(str(info.upper))):
-            raise BridgeError("INVALID_ARGUMENTS", "价格超出终端当前涨跌停范围", 422)
+        validate_limit(request, info)
         before = self.read("preorders", steps)
         if any(same_parameters(row, request) for row in before):
             raise BridgeError("ORDER_IDENTITY_AMBIGUOUS", "已存在相同参数的本地预埋单，不能唯一归属新记录", 409)
         path = steps.path("input")
+        cursor = parked_snapshot(self.gui.native).last_id
         row = ["预埋单(手动)", "未启动", "手动发出", request.instrument_id, decode(info.name_hex),
                "买　" if request.side == "buy" else "　卖", "开仓" if request.offset == "open" else "平仓",
                str(request.price), str(request.volume), "投机", "13:00:00", ""]
@@ -61,29 +75,55 @@ class OrderActions:
             LOG.info("原生导入结果：%s", message, extra={"request_id": steps.request_id, "step": "import"})
         with steps.step("verify_parameters"):
             after = self.read("preorders", steps)
-            matches = [r for r in after if same_parameters(r, request)]
             if message == "读取 1 条，导入成功 0 条" and after == before:
                 steps.save("rejected", effect="rejected")
                 raise BridgeError("ORDER_REJECTED", "终端拒绝导入，未发送委托", 422, submission_status="rejected")
-            if (len(matches) != 1 or len(after) != len(before)+1
-                    or matches[0]["状态"] != "未启动" or matches[0]["触发条件"] != "手动发出"
-                    or sorted(local_identity(r) for r in after if r is not matches[0])
-                    != sorted(local_identity(r) for r in before)):
-                raise BridgeError("OPERATION_STATUS_UNKNOWN", "导入回读不能证明本次记录的唯一身份", 502)
-            steps.owned_row = matches[0]
-            steps.save("parameters_verified")
+            self.bind_local(before, after, request, steps, ("未启动",))
+            steps.parked_id = validate_preorder(request, parked_snapshot(self.gui.native, cursor))
+        return self.send_local(request, steps)
+
+    def bind_local(self, before: Rows, after: Rows, request: MarketOrder, steps: Steps,
+                   statuses: tuple[str, ...]) -> None:
+        matches = [r for r in after if same_parameters(r, request)]
+        if (len(matches) != 1 or len(after) != len(before)+1
+                or matches[0]["状态"] not in statuses or matches[0]["触发条件"] != "手动发出"
+                or sorted(local_identity(r) for r in after if r is not matches[0])
+                != sorted(local_identity(r) for r in before)):
+            raise BridgeError("OPERATION_STATUS_UNKNOWN", "CSV 回读不能证明本次记录的唯一身份", 502)
+        steps.owned_row = matches[0]
+        steps.save("parameters_verified")
+
+    def finish_capture(self, steps: Steps) -> Receipt | None:
+        if not steps.capture_armed:
+            return None
+        result = Receipt.model_validate(self.gui.native.ask("receipt finish").data)
+        if result.armed or result.active:
+            self.gui.native.poisoned = True
+            raise BridgeError("GUI_RESET_FAILED", "发送观察入口未完全恢复")
+        steps.capture_armed = False
+        return result
+
+    def send_local(self, request: LimitOrder, steps: Steps) -> SubmissionResult:
         with steps.step("locate"):
             self.select_local(steps)
         with steps.step("send"):
+            assert steps.parked_id is not None and steps.session is not None
+            self.gui.native.ask(f"receipt arm {steps.parked_id}")
+            steps.capture_armed = True
             steps.save("submitting", effect="unknown")
             self.gui.key("alt+q")
-            # 读取一次本地状态，不轮询柜台接受或成交。
+            self.gui.managed_snapshot()
+            receipt = self.finish_capture(steps)
+            assert receipt is not None
+            steps.identity = receipt.identity(request, steps.parked_id, steps.session)
+            steps.save("identity_captured")
+            LOG.info("已捕获实际发送引用：%s", steps.identity.model_dump_json(),
+                     extra={"request_id": steps.request_id, "step": "capture_identity"})
             sent = self.owned(self.read("preorders", steps), steps)
             if sent[1]["状态"] != "已发送":
                 raise BridgeError("OPERATION_STATUS_UNKNOWN", "快捷键已触发，但本地已发送状态未确认", 502)
             steps.save("submitted", effect="submitted")
-        self.observe_orders(steps)
-        return SubmissionResult(request_id=steps.request_id)
+        return SubmissionResult(request_id=steps.request_id, identity=steps.identity)
 
     def owned(self, rows: Rows, steps: Steps) -> tuple[int, dict[str, str]]:
         if steps.owned_row is None:
@@ -112,16 +152,6 @@ class OrderActions:
             raise BridgeError("GUI_RESET_FAILED", "本次本地预埋记录未能清理")
         steps.owned_row = None
 
-    def observe_orders(self, steps: Steps) -> None:
-        with steps.step("observe_orders_once"):
-            try:
-                rows = self.read("orders", steps)
-                LOG.info("提交后订单快照 %d 条；未凭相似参数认领订单编号", len(rows),
-                         extra={"request_id": steps.request_id, "step": "observe_orders_once"})
-            except BridgeError as exc:
-                # 单次快照失败不抹去已持久化的本地提交事实；收尾仍必须验证。
-                LOG.warning("本地提交后快照失败：%s", exc.code, extra={"request_id": steps.request_id})
-
     def cancel(self, request: CancelByExchange, steps: Steps) -> SubmissionResult:
         rows = self.read("working", steps)
         matches = [(i, row) for i, row in enumerate(rows)
@@ -137,12 +167,17 @@ class OrderActions:
                 raise BridgeError("ORDER_IDENTITY_AMBIGUOUS", "撤单选择后目标记录已变化", 409)
             self.gui.native.select(self.gui.grid("working").hwnd, index)
         with steps.step("cancel_confirmation"):
-            # 设置被人工改变时 Delete 可能直接发送；在按键前就持久化不确定副作用。
+            # 关闭确认设置时 Delete 会直接发送；确认只能来自后续 CSV。
             steps.save("submitting", effect="unknown")
             self.gui.key("Delete")
-            self.gui.wait(lambda: bool(self.gui.dialogs()), "未取得撤单确认，不能判断是否已发送")
-            snapshot = self.gui.native.windows()
+            deadline = time.monotonic() + min(.5, self.gui.timeout)
+            snapshot = self.gui.managed_snapshot()
+            while not self.gui.dialogs(snapshot) and time.monotonic() < deadline:
+                time.sleep(self.gui.interval)
+                snapshot = self.gui.managed_snapshot()
             dialogs = self.gui.dialogs(snapshot)
+            if not dialogs:
+                return SubmissionResult(request_id=steps.request_id, order_id=request.order_sys_id)
             if len(dialogs) != 1 or not dialogs[0].text.startswith("确认"):
                 raise BridgeError("GUI_RESET_FAILED", "撤单出现未知确认窗口")
             dialog = dialogs[0]
@@ -155,5 +190,4 @@ class OrderActions:
             self.gui.wait(lambda: all(w.hwnd != dialog.hwnd for w in self.gui.dialogs()), "撤单确认未退出")
             self.gui.baseline()
             steps.save("submitted", effect="submitted")
-        self.observe_orders(steps)
         return SubmissionResult(request_id=steps.request_id, order_id=request.order_sys_id)

@@ -86,6 +86,8 @@ class ExecutionConfig(ConfigModel):
     step_timeout_ms: Timeout = 3000
     poll_interval_ms: Annotated[int, Field(ge=1, le=1000)] = 10
     gui_action_gap_ms: Annotated[int, Field(ge=0, le=300000)] = 10
+    csv_confirmation_attempts: Annotated[int, Field(ge=2, le=10)] = 3
+    csv_confirmation_interval_ms: Annotated[int, Field(ge=10, le=1000)] = 100
     idempotency_ttl_hours: Positive = 168
     journal_max_bytes: Positive = 134217728
 

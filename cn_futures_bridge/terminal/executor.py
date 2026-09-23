@@ -10,17 +10,20 @@ from ..config import Settings
 from ..errors import BridgeError, ErrorDetail, FieldProblem
 from ..journal import Journal, error_reply
 from ..logging_store import LogStore
-from ..models import (BalanceQuery, CancelByExchange, LimitOrder, Operation, OrderQuery,
+from ..models import (BalanceQuery, CancelByExchange, LimitOrder, MarketOrder, Operation, OrderQuery,
                       PositionQuery, TradeQuery, TradingStatusQuery)
-from ..results import (BalanceResult, OrdersResult, PositionsResult, Reply, ResultModel,
-                       Snapshot, TradesResult, TradingStatusResult)
+from ..results import (BalanceResult, OrderExecution, OrderIdentity, OrdersResult, PositionsResult, Reply, ResultModel,
+                       Snapshot, SubmissionResult, TradesResult, TradingStatusResult)
 from ..reconnect import CONNECTION_ERRORS
-from .csv_data import funds_text, matches, order_row, position_row, read_csv, trade_row
+from .csv_data import funds_text, read_csv
 from .gui import Gui
+from .market import MarketActions
 from .native import InstrumentInfo, NativeClient, Session
 from .orders import OrderActions
 from .policy import EXCHANGE_NUMBERS, validate_capability
 from .steps import Steps
+from .verification import CsvVerifier
+from .tracking import track
 
 LOG = logging.getLogger(__name__)
 
@@ -34,6 +37,8 @@ class Executor:
         self.native = NativeClient(settings, logs)
         self.gui = Gui(self.native, settings)
         self.orders = OrderActions(self.gui, self.read)
+        self.market = MarketActions(self.orders)
+        self.verifier = CsvVerifier(self.read, settings.execution, lambda identity: track(self.native, identity))
         self.session: Session | None = None
         self.disconnected = False
         self.login_generation: int | None = None
@@ -140,12 +145,15 @@ class Executor:
 
     def read(self, table: str, steps: Steps) -> list[dict[str, str]]:
         with steps.step("export_" + table):
+            self.validate_session()
             self.artifacts.clean()
             window = self.gui.grid(table)
             path = steps.path(table)
             self.native.export(window.hwnd, path)
             self.artifacts.clean()
-            return read_csv(path, table, self.settings.artifacts.max_total_bytes)
+            rows = read_csv(path, table, self.settings.artifacts.max_total_bytes)
+            self.validate_session()
+            return rows
 
     def query(self, operation: Operation, steps: Steps) -> ResultModel:
         request = operation.request()
@@ -168,14 +176,22 @@ class Executor:
             common.update(source="terminal_text", observed_at=datetime.now(timezone.utc).isoformat())
             return BalanceResult.model_validate({**common, "balance": balance})
         if isinstance(request, OrderQuery):
-            rows = [order_row(row) for row in self.read("orders", steps)]
-            return OrdersResult.model_validate({**common, "orders": [r for r in rows if matches(r, request)]})
+            if request.order_ref is not None:
+                identity = OrderIdentity.model_validate(request.model_dump(include={
+                    "exchange_id", "instrument_id", "trading_day", "front_id", "session_id", "order_ref"}))
+                if identity.trading_day != self.session.trading_day:
+                    raise BridgeError("CAPABILITY_NOT_SUPPORTED", "按引用查询只支持终端当前交易日", 501)
+                rows, consistency = self.verifier.query_reference(request, identity, steps)
+                common.update(source="terminal_csv_and_native")
+                return OrdersResult.model_validate({**common, "orders": rows, "consistency": consistency, "identity": identity})
+            rows, consistency = self.verifier.query("orders", request, steps)
+            return OrdersResult.model_validate({**common, "orders": rows, "consistency": consistency})
         if isinstance(request, TradeQuery):
-            rows = [trade_row(row) for row in self.read("trades", steps)]
-            return TradesResult.model_validate({**common, "trades": [r for r in rows if matches(r, request)]})
+            rows, consistency = self.verifier.query("trades", request, steps)
+            return TradesResult.model_validate({**common, "trades": rows, "consistency": consistency})
         if isinstance(request, PositionQuery):
-            rows = [position_row(row) for row in self.read("positions", steps)]
-            return PositionsResult.model_validate({**common, "positions": [r for r in rows if matches(r, request)]})
+            rows, consistency = self.verifier.query("positions", request, steps)
+            return PositionsResult.model_validate({**common, "positions": rows, "consistency": consistency})
         raise BridgeError("INVALID_ARGUMENTS", "内部查询类型错误", 422)
 
     def execute(self, request_id: str, operation: Operation) -> Reply:
@@ -191,21 +207,43 @@ class Executor:
                 raise BridgeError("SERVICE_NOT_READY", "执行器已暂停，需要人工核对后恢复")
             with steps.step("prepare"):
                 session = self.validate_session()
+                steps.session = session
+                self.gui.baseline()
                 if not native_only:
-                    self.gui.baseline()
                     steps.directory = self.artifacts.create()
                 owned = True
                 if steps.writes and not session.trading_day:
                     raise BridgeError("SERVICE_NOT_READY", "缺少可信交易日，暂不允许写操作")
                 steps.save("started", session=repr(session.identity))
+            before = None
+            if isinstance(request, (MarketOrder, CancelByExchange)):
+                with steps.step("snapshot_before"):
+                    before = self.verifier.snapshot(request, steps)
             if isinstance(request, LimitOrder):
                 info = self.instrument(request.instrument_id, request.exchange_id)
-                value = self.orders.limit(request, info, steps)
+                steps.execution = OrderExecution(kind="limit", price=float(request.price),
+                                                 time_in_force="IOC" if request.time_in_force == "IOC" else "GFD")
+                value = (self.market.limit_ioc(request, info, steps) if request.time_in_force == "IOC"
+                         else self.orders.limit(request, info, steps))
+            elif isinstance(request, MarketOrder):
+                info = self.instrument(request.instrument_id, request.exchange_id)
+                value = self.market.create(request, info, steps)
             elif isinstance(request, CancelByExchange):
                 self.instrument(request.instrument_id, request.exchange_id)
+                steps.execution = OrderExecution(kind="cancel")
                 value = self.orders.cancel(request, steps)
             else:
                 value = self.query(operation, steps)
+            if isinstance(request, (MarketOrder, CancelByExchange)):
+                assert before is not None and isinstance(value, SubmissionResult)
+                with steps.step("verify_execution"):
+                    value.execution = steps.execution
+                    value.verification = self.verifier.observe(request, before, steps)
+                    value.identity, value.order_id = steps.identity, steps.order_id or value.order_id
+                    if isinstance(request, CancelByExchange) and steps.effect == "unknown":
+                        if value.verification.status != "observed":
+                            raise BridgeError("OPERATION_STATUS_UNKNOWN", "未出现撤单确认且 CSV 尚不能确认目标订单终态", 502)
+                        steps.save("cancel_observed", effect="submitted")
             with steps.step("verify_session"):
                 self.validate_session()
         except BridgeError as exc:
@@ -216,11 +254,15 @@ class Executor:
             LOG.error("未预期执行异常：%s", type(exc).__name__, extra={"request_id": request_id})
             error = BridgeError("TERMINAL_DATA_INVALID", "终端操作异常，查看对应步骤日志", 502)
         finally:
-            if owned and not native_only:
+            if owned:
                 try:
                     with steps.step("cleanup"):
                         if not self.native.poisoned:
+                            self.gui.managed_snapshot()
+                            self.orders.finish_capture(steps)
+                            self.market.close_dialog(steps)
                             self.orders.cleanup(steps)
+                            self.market.restore(steps)
                             self.gui.finish()
                         else:
                             raise BridgeError("GUI_RESET_FAILED", "旧调用未退出，保留文件并暂停派发")
@@ -234,9 +276,14 @@ class Executor:
                 self.screenshot(steps)
         if error:
             error.submission_status = steps.effect or error.submission_status
+            error.identity = steps.identity
+            error.order_id = steps.order_id or error.order_id
             if isinstance(value, ResultModel) and hasattr(value, "order_id"):
-                error.order_id = getattr(value, "order_id")
+                error.order_id = error.order_id or getattr(value, "order_id")
             reply = error_reply(request_id, error, blocked=self.blocked)
+            if isinstance(value, SubmissionResult):
+                reply.body.update(execution=value.execution.model_dump(mode="json") if value.execution else None,
+                                  verification=value.verification.model_dump(mode="json") if value.verification else None)
         else:
             assert value is not None
             if isinstance(value, Snapshot):
