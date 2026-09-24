@@ -25,6 +25,7 @@ poll_interval_ms = 10
 gui_action_gap_ms = 10
 csv_confirmation_attempts = 3
 csv_confirmation_interval_ms = 100
+price_max_deviation_ratio = 0.05 # 限价自动截断的最大超界比例；0 关闭截断，仍按买下卖上对齐。
 idempotency_ttl_hours = 168
 journal_max_bytes = 134217728
 

@@ -45,6 +45,8 @@ reconnect.enabled 默认 true；interval_seconds 为严格整数 60～86400，�
 
 公共 execution.csv_confirmation_attempts 默认 3，严格整数 2～10；csv_confirmation_interval_ms 默认 100，严格整数 10～1000。用于交易后的有界 CSV 观察及三个 CSV 查询的一致性核对；不改变 GUI 按键间隔或排队期限。
 
+execution.price_max_deviation_ratio 默认 0.05，有限数且 0 ≤ 值 < 1。控制显式限价买价超涨停、卖价低于跌停时允许自动截断的幅度；相反方向越界拒绝。0 关闭越界截断，仍修正极小浮点尾差并按买下卖上对齐 tick。完整规则及返回字段见 [HTTP 接口](api.md)。字段可省略，旧 config.toml 无需迁移；修改后重启生效。
+
 实例只使用启动时的配置，不通过 API 或重连切换。容器身份摘要只包含公共配置和当前账户身份，排除备用组和密码；备用组变化不影响当前实例复用。重复 run 遇到 mode、当前账户、站点或公共配置变化时要求 restart，不静默复用旧登录。密码仅在启动时读取，修改当前密码也须 restart。CLI 配置错误输出到 stderr。
 
 正常加载拒绝旧 [account]、bridge.environment 和 api.token，并提示 just migrate-config。迁移把旧账户放到原环境对应组，simnow 映射 sandbox，旧环境省略时沿用原 simnow 默认值；另一组使用示例的空凭证配置，公共自定义值保留。旧 account/environment 与新 accounts/mode 结构混用时拒绝；转换后须通过新模型校验，失败不改写。首次备份为 config.toml.bak，已有备份时改用 config.toml.<唯一编号>.bak；完整原文含注释保存在备份中，不猜测注释中的备用凭证。原子替换前核对源文件未变化，备份及新文件均为 0600；重复迁移新格式只验证，不改写或增加备份。

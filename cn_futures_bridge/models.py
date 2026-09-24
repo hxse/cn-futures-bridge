@@ -47,7 +47,8 @@ class MarketOrder(RequestModel):
 
 
 class LimitOrder(MarketOrder):
-    price: Annotated[Decimal, BeforeValidator(price_value), WithJsonSchema({"type": "number", "exclusiveMinimum": 0})]
+    price: Annotated[Decimal, BeforeValidator(price_value), WithJsonSchema({"type": "number", "exclusiveMinimum": 0})] = Field(
+        description="目标限价。CFB 修正极小浮点尾差、按买下卖上对齐 tick；允许范围内的买价超涨停/卖价低于跌停自动截断。实际价及原因见 execution。")
     time_in_force: Literal["GFD", "IOC", "FOK"] = "GFD"
 
     @field_serializer("price")

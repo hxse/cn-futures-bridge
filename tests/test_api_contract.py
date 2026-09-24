@@ -22,6 +22,11 @@ def test_eight_routes_and_validation_before_execution() -> None:
             cancel_schema = schema["paths"]["/cfb/cancel_order"]["post"]["requestBody"]["content"]["application/json"]["schema"]
             assert cancel_schema["discriminator"]["propertyName"] == "by"
             assert schema["components"]["schemas"]["LimitOrder"]["properties"]["price"]["type"] == "number"
+            execution = schema["components"]["schemas"]["OrderExecution"]["properties"]
+            assert {'requested_price','price_adjusted','price_adjustments'} <= execution.keys()
+            description = schema['paths']['/cfb/create_limit_order']['post']['description']
+            assert '5%' in description and 'execution.requested_price' in description
+            assert 'context' in schema['components']['schemas']['FieldProblem']['properties']
             order = {"exchange_id": "CZCE", "instrument_id": "RM701", "side": "buy", "offset": "open", "volume": 1, "price": 2323}
             valid = await client.post("/cfb/create_limit_order", json=order)
             assert valid.status_code == 503 and valid.json()["error"]["code"] == "SERVICE_NOT_READY"

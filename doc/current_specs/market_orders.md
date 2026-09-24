@@ -10,7 +10,7 @@
 
 ## 参数和执行链路
 
-限价手数来自 Instrument_MinLimitOrderVolume/MaxLimitOrderVolume，步长和涨跌停来自快期合约对象。缺失资料报 503，非连续交易报 409/MARKET_NOT_TRADING，用户手数或限价越界报 422。一次请求只发送一次，不自动拆单，不降级到 GFD。
+限价手数来自 Instrument_MinLimitOrderVolume/MaxLimitOrderVolume，步长和涨跌停来自快期合约对象。缺失/异常资料报 503，非连续交易报 409/MARKET_NOT_TRADING，用户手数非法报 422。显式限价 IOC 在进入下单板前，按 [HTTP 价格规则](api.md) 完成一次归一化，后续核对实际价；模拟市价直接使用可用于价格网格的真实涨跌停价，不应用自动修正。一次请求只发送一次，不自动拆单，不降级到 GFD。
 
 固定版本 CSV 导入不能表达 IOC，因此显式限价 IOC 与模拟市价复用下单板路径；普通限价 GFD 仍用无弹窗 CSV 导入。
 

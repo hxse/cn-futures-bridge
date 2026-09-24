@@ -1,6 +1,6 @@
 """限价 IOC 与市价模拟共用下单板、CSV 核对和唯一发送链路。"""
 
-from decimal import Decimal
+from fractions import Fraction
 import logging
 
 from ..errors import BridgeError
@@ -8,7 +8,8 @@ from ..models import LimitOrder, MarketOrder
 from ..results import OrderExecution, SubmissionResult
 from .order_form import OrderForm
 from .native import InstrumentInfo
-from .orders import OrderActions, same_parameters, validate_limit
+from .orders import OrderActions, same_parameters
+from .pricing import price_error, price_rules, validate_limit
 from .steps import Steps
 from .tracking import ParkedSnapshot, parked_snapshot, validate_preorder
 
@@ -18,9 +19,10 @@ LOG = logging.getLogger(__name__)
 def emulate_market(request: MarketOrder, info: InstrumentInfo) -> LimitOrder:
     if info.status != 3:
         raise BridgeError("MARKET_NOT_TRADING", "限价模拟市价仅在终端确认连续交易时提交", 409)
-    price = Decimal(str(info.upper if request.side == "buy" else info.lower))
-    if not price.is_finite() or price <= 0 or info.lower <= 0 or info.upper < info.lower:
-        raise BridgeError("SERVICE_NOT_READY", "缺少有效涨跌停保护价格，停止模拟市价")
+    tick, lower, upper = price_rules(info)
+    price = upper if request.side == "buy" else lower
+    if (Fraction(price) / Fraction(tick)).denominator != 1:
+        raise price_error("模拟市价的涨跌停边界不在有效报价网格", info, status=503)
     limit = LimitOrder.model_validate({**request.model_dump(), "price": price, "time_in_force": "IOC"})
     validate_limit(limit, info)
     return limit

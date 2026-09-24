@@ -44,7 +44,7 @@ class Steps:
             self.effect = effect
         if self.writes:
             self.journal.phase(self.request_id, phase, effect=effect, session=session, artifact=self.directory,
-                               identity=self.identity, order_id=self.order_id)
+                               identity=self.identity, order_id=self.order_id, execution=self.execution)
 
     @contextmanager
     def step(self, name: str) -> Iterator[None]:

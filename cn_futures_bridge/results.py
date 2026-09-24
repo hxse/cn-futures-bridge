@@ -79,10 +79,25 @@ class Balance(ResultModel):
     values_source: Literal["server", "local"] = "server"
 
 
+PriceAdjustmentReason = Literal["float_noise", "upper_limit", "lower_limit", "tick_floor", "tick_ceil"]
+
+
+class PriceContext(ResultModel):
+    requested_price: FiniteFloat | None = None
+    price_tick: FiniteFloat | None = None
+    lower_limit: FiniteFloat | None = None
+    upper_limit: FiniteFloat | None = None
+    max_deviation_ratio: FiniteFloat | None = None
+
+
 class OrderExecution(ResultModel):
     kind: Literal["limit", "emulated_market", "cancel"]
-    price: FiniteFloat | None = None
+    price: FiniteFloat | None = Field(default=None, description="实际采用的提交限价；不是成交价。")
     time_in_force: Literal["GFD", "IOC"] | None = None
+    requested_price: FiniteFloat | None = Field(default=None, description="显式限价收到的原始价格；模拟市价和撤单为 null。")
+    price_adjusted: bool = Field(default=False, description="实际限价是否因价格处理而改变。")
+    price_adjustments: list[PriceAdjustmentReason] = Field(default_factory=list,
+        description="按处理顺序记录尾差、边界截断或方向取整；未调整时为空。")
 
 
 class Verification(ResultModel):

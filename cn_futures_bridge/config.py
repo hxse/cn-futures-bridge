@@ -88,6 +88,7 @@ class ExecutionConfig(ConfigModel):
     gui_action_gap_ms: Annotated[int, Field(ge=0, le=300000)] = 10
     csv_confirmation_attempts: Annotated[int, Field(ge=2, le=10)] = 3
     csv_confirmation_interval_ms: Annotated[int, Field(ge=10, le=1000)] = 100
+    price_max_deviation_ratio: Annotated[float, Field(ge=0, lt=1, allow_inf_nan=False)] = 0.05
     idempotency_ttl_hours: Positive = 168
     journal_max_bytes: Positive = 134217728
 

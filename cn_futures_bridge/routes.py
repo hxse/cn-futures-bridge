@@ -82,7 +82,16 @@ curl 'http://127.0.0.1:45173/cfb/fetch_orders?mode=sandbox&exchange_id=DCE&instr
         return await execute(service, request, "create_market_order", order, idempotency_key)
 
     @router.post("/create_limit_order", response_model=SubmissionResult, status_code=202,
-                 summary="限价开仓或平仓", description=submit_description + "支持 GFD/IOC、投机；FOK 等未核验分支仍报能力错误。")
+                 summary="限价开仓或平仓", description=submit_description +
+                 "支持 GFD/IOC、投机；FOK 等未核验分支仍报能力错误。\n\n"
+                 "**价格处理**：先修正不超过 tick×10⁻⁹ 的浮点尾差，再按买下卖上对齐。"
+                 "买价高于涨停或卖价低于跌停时，超界幅度不超过配置比例才自动截断（默认 5%，含边界）。"
+                 "买价低于跌停、卖价高于涨停或超界过大返回 422；合约价格资料无效返回 503。"
+                 "不改变手数和有效期，不自动追价或补单。\n\n"
+                 "execution.requested_price 为原价，price 为实际提交限价，price_adjusted 和 price_adjustments 说明调整。"
+                 "例如 tick=1 时买入 3514.35 按 3514 提交；实际成交价仍以成交回报为准。"
+                 "价格错误的 error.details[].context 提供请求价、步长、上下限及允许超界比例。"
+                 "幂等键仍匹配原始请求，重放不按新边界重新定价。")
     async def create_limit_order(request: Request, order: LimitOrder,
                                  idempotency_key: IdempotencyKey = None) -> JSONResponse:
         return await execute(service, request, "create_limit_order", order, idempotency_key)

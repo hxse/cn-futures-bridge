@@ -21,6 +21,7 @@ from .market import MarketActions
 from .native import InstrumentInfo, NativeClient, Session
 from .orders import OrderActions
 from .policy import EXCHANGE_NUMBERS, validate_capability
+from .pricing import normalize_limit
 from .steps import Steps
 from .verification import CsvVerifier
 from .tracking import track
@@ -219,17 +220,30 @@ class Executor:
                     raise BridgeError("SERVICE_NOT_READY", "缺少可信交易日，暂不允许写操作")
                 steps.save("started", session=repr(session.identity))
             before = None
+            info = None
+            effective = None
+            if isinstance(request, MarketOrder):
+                info = self.instrument(request.instrument_id, request.exchange_id)
+                if isinstance(request, LimitOrder):
+                    with steps.step("normalize_price"):
+                        effective, reasons = normalize_limit(request, info, self.settings.execution.price_max_deviation_ratio)
+                        steps.execution = OrderExecution(kind="limit", price=float(effective.price),
+                            time_in_force="IOC" if request.time_in_force == "IOC" else "GFD",
+                            requested_price=float(request.price), price_adjusted=effective.price != request.price,
+                            price_adjustments=reasons)
+                        LOG.info("限价决策：%s；tick=%s，lower=%s，upper=%s，最大超界比例=%s",
+                                 steps.execution.model_dump_json(), info.tick, info.lower, info.upper,
+                                 self.settings.execution.price_max_deviation_ratio,
+                                 extra={"request_id": request_id, "action": operation.action, "step": "price_decision"})
             if isinstance(request, (MarketOrder, CancelByExchange)):
                 with steps.step("snapshot_before"):
                     before = self.verifier.snapshot(request, steps, before=True)
             if isinstance(request, LimitOrder):
-                info = self.instrument(request.instrument_id, request.exchange_id)
-                steps.execution = OrderExecution(kind="limit", price=float(request.price),
-                                                 time_in_force="IOC" if request.time_in_force == "IOC" else "GFD")
-                value = (self.market.limit_ioc(request, info, steps) if request.time_in_force == "IOC"
-                         else self.orders.limit(request, info, steps))
+                assert info is not None and effective is not None
+                value = (self.market.limit_ioc(effective, info, steps) if effective.time_in_force == "IOC"
+                         else self.orders.limit(effective, info, steps))
             elif isinstance(request, MarketOrder):
-                info = self.instrument(request.instrument_id, request.exchange_id)
+                assert info is not None
                 value = self.market.create(request, info, steps)
             elif isinstance(request, CancelByExchange):
                 self.instrument(request.instrument_id, request.exchange_id)
@@ -293,10 +307,9 @@ class Executor:
             error.order_id = steps.order_id or error.order_id
             if isinstance(value, ResultModel) and hasattr(value, "order_id"):
                 error.order_id = error.order_id or getattr(value, "order_id")
-            reply = error_reply(request_id, error, blocked=self.blocked)
+            reply = error_reply(request_id, error, blocked=self.blocked, execution=steps.execution)
             if isinstance(value, SubmissionResult):
-                reply.body.update(execution=value.execution.model_dump(mode="json") if value.execution else None,
-                                  verification=value.verification.model_dump(mode="json") if value.verification else None)
+                reply.body.update(verification=value.verification.model_dump(mode="json") if value.verification else None)
         else:
             assert value is not None
             if isinstance(value, Snapshot):
@@ -312,7 +325,7 @@ class Executor:
             error = BridgeError("STORAGE_UNAVAILABLE", "结果或工件状态未能可靠保存，停止派发",
                                 submission_status=steps.effect)
             self.fail(error)
-            reply = error_reply(request_id, error, blocked=True)
+            reply = error_reply(request_id, error, blocked=True, execution=steps.execution)
         return reply
 
     def screenshot(self, steps: Steps) -> None:

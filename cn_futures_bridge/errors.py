@@ -3,7 +3,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from .results import OrderExecution, OrderIdentity, Verification
+from .results import OrderExecution, OrderIdentity, PriceContext, Verification
 
 Submission = Literal["submitted", "rejected", "unknown"]
 Capability = Literal["supported", "unsupported", "unverified"]
@@ -13,6 +13,7 @@ class FieldProblem(BaseModel):
     loc: list[str | int]
     type: str
     message: str
+    context: PriceContext | None = None
 
 
 class ErrorDetail(BaseModel):

@@ -2,7 +2,6 @@
 
 from collections.abc import Callable
 import csv
-from decimal import Decimal
 import logging
 import re
 import time
@@ -13,6 +12,7 @@ from ..results import SubmissionResult
 from .csv_data import PREORDER_HEADER, number
 from .gui import Gui
 from .native import InstrumentInfo, decode
+from . import pricing
 from .steps import Steps
 from .tracking import Receipt, parked_snapshot, validate_preorder
 
@@ -36,28 +36,13 @@ def local_identity(row: dict[str, str]) -> tuple[str, ...]:
     return tuple(row[key] for key in PREORDER_HEADER if key not in ("状态", "详细状态"))
 
 
-def validate_limit(request: LimitOrder, info: InstrumentInfo) -> None:
-    tick = Decimal(str(info.tick))
-    if not tick.is_finite() or tick <= 0:
-        raise BridgeError("SERVICE_NOT_READY", "合约最小变动价位尚未就绪")
-    if info.limit_min_volume < 1 or info.limit_max_volume < info.limit_min_volume:
-        raise BridgeError("SERVICE_NOT_READY", "限价最小/最大手数资料无效")
-    if not info.limit_min_volume <= request.volume <= info.limit_max_volume:
-        raise BridgeError("INVALID_ARGUMENTS", "手数超出终端限价手数范围，不自动拆单", 422)
-    if request.price % tick:
-        raise BridgeError("INVALID_ARGUMENTS", "价格不是最小变动价位的整数倍", 422)
-    if (info.lower > 0 and request.price < Decimal(str(info.lower))) or (
-            info.upper > 0 and request.price > Decimal(str(info.upper))):
-        raise BridgeError("INVALID_ARGUMENTS", "价格超出终端当前涨跌停范围", 422)
-
-
 class OrderActions:
     def __init__(self, gui: Gui, read: ReadTable):
         self.gui = gui
         self.read = read
 
     def limit(self, request: LimitOrder, info: InstrumentInfo, steps: Steps) -> SubmissionResult:
-        validate_limit(request, info)
+        pricing.validate_limit(request, info)
         before = self.read("preorders", steps)
         if any(same_parameters(row, request) for row in before):
             raise BridgeError("ORDER_IDENTITY_AMBIGUOUS", "已存在相同参数的本地预埋单，不能唯一归属新记录", 409)

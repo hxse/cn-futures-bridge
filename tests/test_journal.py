@@ -1,11 +1,13 @@
 """只验证持久化防重发的最小契约，不启动交易终端。"""
 
 from pathlib import Path
+import sqlite3
 
 from cn_futures_bridge.config import BridgeConfig, Settings
 from cn_futures_bridge.journal import Journal
 from cn_futures_bridge.models import Operation
-from cn_futures_bridge.results import OrderIdentity, Reply, SubmissionResult
+from cn_futures_bridge.results import OrderExecution, OrderIdentity, Reply, SubmissionResult
+from cn_futures_bridge.terminal.steps import Steps
 
 
 def test_replay_conflict_and_interrupted_import(tmp_path: Path) -> None:
@@ -51,3 +53,30 @@ def test_captured_identity_survives_worker_and_service_restart(tmp_path: Path) -
     replay = Journal(settings).lookup(operation, "identity-key")
     assert replay and replay.body["identity"] == interrupted.body["identity"]
     assert replay.body["order_id"] == "599159" and replay.body["submission_status"] == "unknown"
+
+
+def test_normalized_price_survives_interruption_and_legacy_migration(tmp_path: Path) -> None:
+    settings=Settings(bridge=BridgeConfig(data_dir=tmp_path))
+    operation=Operation(action='create_limit_order',parameters={'exchange_id':'DCE','instrument_id':'m2701',
+        'side':'buy','offset':'open','volume':1,'price':3514.35})
+    journal=Journal(settings)
+    journal.admit('legacy',operation,'old')
+    old=Reply(request_id='legacy',status=202,body={'request_id':'legacy','submission_status':'submitted',
+        'execution':{'kind':'limit','price':3514,'time_in_force':'GFD'}})
+    journal.finish(old)
+    # 恢复为新增 execution 列之前的真实表结构，旧响应不添加臆测的调价字段。
+    with sqlite3.connect(journal.path) as db:
+        db.execute('ALTER TABLE operations DROP COLUMN execution')
+    journal=Journal(settings)
+    assert journal.lookup(operation,'old')==old
+    journal.admit('pending',operation,'new')
+    steps=Steps('pending','create_limit_order',journal,tmp_path)
+    steps.execution=OrderExecution(kind='limit',price=3514,time_in_force='GFD',requested_price=3514.35,
+                                    price_adjusted=True,price_adjustments=['tick_floor'])
+    steps.save('importing',effect='unknown')
+    expected=steps.execution.model_dump(mode='json')
+    assert Journal(settings).interrupted('pending').body['execution']==expected
+    restarted=Journal(settings)
+    assert restarted.recover()==1
+    replay=restarted.lookup(operation,'new')
+    assert replay and replay.body['execution']==expected and replay.body['submission_status']=='unknown'

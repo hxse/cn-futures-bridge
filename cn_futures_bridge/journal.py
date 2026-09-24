@@ -11,12 +11,15 @@ from typing import Iterator
 from .config import Settings
 from .errors import BridgeError
 from .models import Operation
-from .results import OrderIdentity, Reply
+from .results import OrderExecution, OrderIdentity, Reply
 
 
-def error_reply(request_id: str, error: BridgeError, *, blocked: bool = False) -> Reply:
+def error_reply(request_id: str, error: BridgeError, *, blocked: bool = False,
+                execution: OrderExecution | None = None) -> Reply:
+    response = error.response(request_id)
+    response.execution = execution
     return Reply(request_id=request_id, status=error.status,
-                 body=error.response(request_id).model_dump(mode="json"), blocked=blocked)
+                 body=response.model_dump(mode="json"), blocked=blocked)
 
 
 class Journal:
@@ -36,7 +39,7 @@ class Journal:
                 created REAL NOT NULL, updated REAL NOT NULL,
                 UNIQUE(namespace, key_hash))""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(operations)")}
-            for name in ("identity", "order_id"):
+            for name in ("identity", "order_id", "execution"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE operations ADD COLUMN {name} TEXT")
 
@@ -106,13 +109,16 @@ class Journal:
 
     def phase(self, request_id: str, phase: str, *, effect: str | None = None,
               session: str | None = None, artifact: Path | None = None,
-              identity: OrderIdentity | None = None, order_id: str | None = None) -> None:
+              identity: OrderIdentity | None = None, order_id: str | None = None,
+              execution: OrderExecution | None = None) -> None:
         with self._db() as db:
             result = db.execute("""UPDATE operations SET phase=?,effect=COALESCE(?,effect),
                 session=COALESCE(?,session),artifact=COALESCE(?,artifact),
-                identity=COALESCE(?,identity),order_id=COALESCE(?,order_id),updated=? WHERE request_id=?""",
+                identity=COALESCE(?,identity),order_id=COALESCE(?,order_id),execution=COALESCE(?,execution),
+                updated=? WHERE request_id=?""",
                 (phase, effect, session, str(artifact) if artifact else None,
-                 identity.model_dump_json() if identity else None, order_id, time.time(), request_id))
+                 identity.model_dump_json() if identity else None, order_id,
+                 execution.model_dump_json() if execution else None, time.time(), request_id))
             if result.rowcount != 1:
                 raise BridgeError("STORAGE_UNAVAILABLE", "缺少提交前操作记录")
 
@@ -123,27 +129,29 @@ class Journal:
 
     def interrupted(self, request_id: str) -> Reply:
         with self._db() as db:
-            row = db.execute("SELECT effect,reply,identity,order_id FROM operations WHERE request_id=?", (request_id,)).fetchone()
+            row = db.execute("SELECT effect,reply,identity,order_id,execution FROM operations WHERE request_id=?", (request_id,)).fetchone()
             if row and row[1]:
                 return Reply.model_validate_json(row[1])
             effect = row[0] if row and row[0] in ("submitted", "rejected") else "unknown"
             return error_reply(request_id, BridgeError("OPERATION_STATUS_UNKNOWN",
                 "执行器失联，已保留提交事实；请核对订单、成交及日志", 502, submission_status=effect,
                 identity=OrderIdentity.model_validate_json(row[2]) if row and row[2] else None,
-                order_id=row[3] if row else None), blocked=True)
+                order_id=row[3] if row else None), blocked=True,
+                execution=OrderExecution.model_validate_json(row[4]) if row and row[4] else None)
 
     def recover(self) -> int:
         with self._db() as db:
-            rows = db.execute("SELECT request_id,phase,effect,identity,order_id FROM operations WHERE reply IS NULL AND namespace=?",
+            rows = db.execute("SELECT request_id,phase,effect,identity,order_id,execution FROM operations WHERE reply IS NULL AND namespace=?",
                               (self.namespace,)).fetchall()
-            for request_id, phase, effect, identity, order_id in rows:
+            for request_id, phase, effect, identity, order_id, execution in rows:
                 safe = phase in ("queued", "started") and effect is None
                 known = effect if effect in ("submitted", "rejected") else "unknown"
                 error = BridgeError("REQUEST_INTERRUPTED" if safe else "OPERATION_STATUS_UNKNOWN",
                                     "上次进程中断；未自动重放，请核对日志和账户", 503,
                                     submission_status=None if safe else known, order_id=order_id,
                                     identity=OrderIdentity.model_validate_json(identity) if identity else None)
-                reply = error_reply(request_id, error)
+                reply = error_reply(request_id, error,
+                                    execution=OrderExecution.model_validate_json(execution) if execution else None)
                 db.execute("UPDATE operations SET phase='finished',effect=?,reply=?,updated=? WHERE request_id=?",
                            (None if safe else known, reply.model_dump_json(), time.time(), request_id))
             self._prune(db)
