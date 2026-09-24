@@ -89,17 +89,17 @@ class Executor:
         session = self.native.session()
         if self.login_generation is not None and session.login_generation != self.login_generation:
             self.identity_lost = True
-            self.gui.bindings.clear()
+            self.gui.reset_bindings()
             raise BridgeError("SERVICE_NOT_READY", "终端再次进入登录界面，停止使用旧账户缓存；请重启容器")
         if not session.status_bound or not session.connected or not session.identity_match:
             self.disconnected = True
-            self.gui.bindings.clear()
+            self.gui.reset_bindings()
             self.login_state = "disconnected"
             if session.status_bound and session.identity_match and not session.connected:
                 raise BridgeError("CONNECTION_LOST", "交易或行情连接已断开")
             raise BridgeError("SERVICE_NOT_READY", "真实账户身份或原生对象未就绪，需要人工核对")
         if self.session and (self.disconnected or session.identity != self.session.identity):
-            self.gui.bindings.clear()
+            self.gui.reset_bindings()
             if not rebind or session.identity == self.session.identity:
                 raise BridgeError("SERVICE_NOT_READY", "连接或会话已改变，需要确认新会话；同身份旧缓存须重启终端")
         self.session = session
@@ -111,6 +111,7 @@ class Executor:
     def resume(self) -> None:
         if self.native.poisoned:
             raise BridgeError("GUI_UNRESPONSIVE", "旧原生调用未确认退出，须受控重启整个容器")
+        self.gui.reset_bindings()
         self.validate_session(rebind=True)
         self.gui.finish()
         self.blocked = False
@@ -195,6 +196,8 @@ class Executor:
         raise BridgeError("INVALID_ARGUMENTS", "内部查询类型错误", 422)
 
     def execute(self, request_id: str, operation: Operation) -> Reply:
+        self.gui.reset_bindings()
+        self.native.timings.clear()
         native_only = operation.action == "fetch_trading_status"
         steps = Steps(request_id, operation.action, self.journal, None)
         error: BridgeError | None = None
@@ -218,7 +221,7 @@ class Executor:
             before = None
             if isinstance(request, (MarketOrder, CancelByExchange)):
                 with steps.step("snapshot_before"):
-                    before = self.verifier.snapshot(request, steps)
+                    before = self.verifier.snapshot(request, steps, before=True)
             if isinstance(request, LimitOrder):
                 info = self.instrument(request.instrument_id, request.exchange_id)
                 steps.execution = OrderExecution(kind="limit", price=float(request.price),
@@ -271,6 +274,11 @@ class Executor:
                 except Exception:
                     error = BridgeError("GUI_RESET_FAILED", "本次操作收尾未确认，保留证据并暂停派发")
                     self.blocked = True
+            self.gui.reset_bindings()
+            LOG.info("原生命令累计耗时（含通信）：%s",
+                     {name: {"calls": count, "ms": round(seconds*1000, 3)}
+                      for name, (count, seconds) in self.native.timings.items()},
+                     extra={"request_id": request_id, "action": operation.action, "step": "native_timings"})
             if error and (error.code in CONNECTION_ERRORS or error.code in ("GUI_UNRESPONSIVE", "GUI_RESET_FAILED", "STORAGE_UNAVAILABLE", "SERVICE_NOT_READY")
                           or self.native.poisoned or (steps.effect == "unknown" and steps.owned_row is None)):
                 self.fail(error)

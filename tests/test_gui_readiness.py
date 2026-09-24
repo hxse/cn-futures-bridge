@@ -155,3 +155,28 @@ def test_form_restore_skips_same_fields_but_rereads_after_instrument(gui: Gui, m
     form.restore(state)
     assert writes == [3301, 3302, 3303] and len(tabs) == 3
     assert form.snapshot() == state
+
+
+def test_funds_reads_opening_snapshot_then_uses_verified_close(gui: Gui, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = Window(hwnd=1, parent=0, root=1, checked=0, id=0, class_name="main", visible=True,
+                  enabled=True, password=False, rect=(0, 0, 800, 600), items_hex=[],
+                  text_hex="快期2-CTP-上期技术-电信2".encode("gb18030").hex())
+    button = root.model_copy(update={"hwnd": 3, "parent": 1, "id": 3009, "class_name": "Button"})
+    dialog = root.model_copy(update={"hwnd": 2, "root": 2, "parent": 1, "class_name": "#32770",
+                                     "text_hex": "期货资金账户详情".encode("gb18030").hex()})
+    body = dialog.model_copy(update={"hwnd": 4, "parent": 2, "id": 7201, "class_name": "Static",
+                                    "text_hex": "服务器资金字段".encode("gb18030").hex()})
+    monkeypatch.setattr(gui, "baseline", lambda: Windows(windows=[root, button], focus=1, flags=0))
+    snapshots = iter([Windows(windows=[root, button, dialog, body], focus=2, flags=0)])
+    monkeypatch.setattr(gui.native, "managed_windows", lambda: next(snapshots))
+    pending = healthy().model_copy(update={"funds": 2, "funds_count": 1, "dialogs": 1, "enabled": False})
+    commands = feed(gui, monkeypatch, [pending, healthy()])
+    read_state = gui.native.ask
+    monkeypatch.setattr(gui.native, "ask", lambda command: NativeReply(error=0, done=True, data={"focused": True})
+                        if command == "focus 3" else read_state(command))
+    keys: list[tuple[str, ...]] = []
+    monkeypatch.setattr(gui, "activate", lambda title=None: None)
+    monkeypatch.setattr(gui, "key", lambda *values: keys.append(values))
+    assert gui.balance_text() == body.text
+    assert keys == [("space",)]
+    assert commands == ["gui_state", "recover_gui 2", "gui_state"]

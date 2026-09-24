@@ -51,7 +51,7 @@ trade_id 与 order_sys_id 使用相同标识规则。时间过滤为严格 HH:MM
 
 正常本地提交且收尾确认后返回 202，包含 request_id、submission_status、order_id、identity、execution、verification。HTTP 202 本身不是成交确认。
 
-submitted 表示本地动作完成，不代表柜台接受或成交。限价 GFD 通过 CSV 导入；限价 IOC 和模拟市价通过下单板生成手动预埋单。开平仓共用实际发送引用捕获：identity 包含 exchange_id、instrument_id、trading_day、front_id、session_id、order_ref。order_id 来自该完整引用的真实订单，尚未分配时为 null。发送前保存 CSV 基线，发送后默认最多 3 轮、轮间 100 ms 精确回读，已确认时提前结束；全程占用同一 FIFO，只发送一次。
+submitted 表示本地动作完成，不代表柜台接受或成交。限价 GFD 通过 CSV 导入；限价 IOC 和模拟市价通过下单板生成手动预埋单。开平仓共用实际发送引用捕获：identity 包含 exchange_id、instrument_id、trading_day、front_id、session_id、order_ref。order_id 来自该完整引用的真实订单，尚未分配时为 null。发送前保存持仓 CSV 基线，发送后默认最多 3 轮、轮间 100 ms 精确回读，已确认时提前结束；全程占用同一 FIFO，只发送一次。
 
 POST 的 execution.kind 为 limit/emulated_market/cancel，price 和 time_in_force 为实际参数；撤单两者为 null。verification 包含 attempts、correlation、orders、trades、positions_before、positions_after 和 error_code。开平仓 source=terminal_csv_and_native，撤单 source=terminal_csv。
 

@@ -53,7 +53,7 @@ class OrderForm:
 
     def control(self, identifier: int, kind: str, snapshot: Windows | None = None,
                 *, actionable: bool = True) -> Window:
-        snapshot = snapshot or self.gui.native.windows()
+        snapshot = snapshot or self.gui.form_snapshot()
         panel = self.panel(snapshot)
         parents = {w.hwnd: w.parent for w in snapshot.windows}
         controls = [w for w in snapshot.windows if w.id == identifier and w.class_name == kind
@@ -64,7 +64,8 @@ class OrderForm:
         return controls[0]
 
     def snapshot(self) -> FormState:
-        snapshot = self.gui.baseline()
+        self.gui.ensure_ready()
+        snapshot = self.gui.form_snapshot()
         for identifier in (3318, 3323, 3325):
             # 合约选定后套利/移仓等选项会隐藏或禁用；读取其状态不要求可点击。
             if self.control(identifier, "Button", snapshot, actionable=False).checked:
@@ -107,8 +108,9 @@ class OrderForm:
         window = self.control(identifier, "Button")
         if window.text != label:
             raise mismatch("买卖或开平控件标签不符合固定终端")
-        if window.checked != 1:
-            self.focus(window);self.gui.key("space")
+        if window.checked == 1:
+            return
+        self.focus(window);self.gui.key("space")
         if self.control(identifier, "Button").checked != 1:
             raise mismatch("买卖或开平选项没有生效")
 
@@ -124,10 +126,15 @@ class OrderForm:
         self.gui._xdo("mousemove", str((left+right)//2), str((top+bottom)//2), "click", "1")
         def menus() -> list[Window]:
             return [w for w in self.gui.native.windows().windows if w.class_name == "#32768" and w.visible]
-        self.gui.wait(lambda: bool(menus()), "委托有效期菜单未打开")
-        candidates = menus()
+        candidates: list[Window] = []
+        def opened() -> bool:
+            nonlocal candidates
+            candidates = menus()
+            return bool(candidates)
+        self.gui.wait(opened, "委托有效期菜单未打开")
         if len(candidates) != 1:
             raise BridgeError("GUI_RESET_FAILED", "委托有效期菜单不唯一")
+        closed = False
         try:
             menu = Menu.model_validate(self.gui.native.ask(f"menu {candidates[0].hwnd}").data)
             modes = ("GFD", "GIS", "FAK", "FOK")
@@ -140,10 +147,11 @@ class OrderForm:
                 raise mismatch("目标委托有效期不可选")
             self.gui.key("Home", *(["Down"]*item.index), "Return")
             self.gui.wait(lambda: not menus(), "委托有效期菜单未退出")
+            closed = True
             if self.control(1472, "Static").text != value:
                 raise mismatch("委托有效期回读不一致")
         finally:
-            if not self.gui.native.poisoned and any(w.hwnd == candidates[0].hwnd for w in menus()):
+            if not closed and not self.gui.native.poisoned and any(w.hwnd == candidates[0].hwnd for w in menus()):
                 self.gui.key("Escape")
 
     def fill(self, request: LimitOrder) -> None:
@@ -161,8 +169,13 @@ class OrderForm:
 
     def open_preorder(self) -> Window:
         self.focus(self.control(3324, "Button"));self.gui.key("space")
-        self.gui.wait(lambda: bool(self.gui.dialogs()), "手动预埋单设置窗口未出现")
-        snapshot = self.gui.managed_snapshot()
+        snapshot: Windows | None = None
+        def opened() -> bool:
+            nonlocal snapshot
+            snapshot = self.gui.managed_snapshot()
+            return bool(self.gui.dialogs(snapshot))
+        self.gui.wait(opened, "手动预埋单设置窗口未出现")
+        assert snapshot is not None
         dialogs = self.gui.dialogs(snapshot)
         if (len(dialogs) != 1 or dialogs[0].text != "设置触发条件"
                 or dialogs[0].parent != self.gui.main(snapshot).hwnd):

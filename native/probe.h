@@ -2,10 +2,10 @@
 #define CFB_NATIVE_H
 #include <windows.h>
 #include <stdint.h>
-#define PROBE_MAP L"Local\\CNFB_Terminal_20260924_6"
-#define PROBE_MESSAGE L"CNFB_Terminal_20260924_6"
+#define PROBE_MAP L"Local\\CNFB_Terminal_20260924_7"
+#define PROBE_MESSAGE L"CNFB_Terminal_20260924_7"
 #define PROBE_MAGIC 0x434e4642u
-enum { INSPECT=1, EXPORT=2, ARM=3, COUNTS=4, STOP=5, IMPORT=6, SESSION=7, PRODUCT=8, INSTRUMENT=9, SELECT_ROW=10, WINDOWS=11, FOCUS=12, SET_TEXT=13, SELECT_COMBO=14, STARTUP_DONE=15, MANAGED_WINDOWS=16, PARKED=17, MENU=18, RECEIPT=19, TRACKING=20, GUI_STATE=21, GUI_RECOVER=22 };
+enum { INSPECT=1, EXPORT=2, ARM=3, COUNTS=4, STOP=5, IMPORT=6, SESSION=7, PRODUCT=8, INSTRUMENT=9, SELECT_ROW=10, WINDOWS=11, FOCUS=12, SET_TEXT=13, SELECT_COMBO=14, STARTUP_DONE=15, MANAGED_WINDOWS=16, PARKED=17, MENU=18, RECEIPT=19, TRACKING=20, GUI_STATE=21, GUI_RECOVER=22, FORM_WINDOWS=23, GRID_BINDING=24 };
 typedef struct {
     DWORD magic, pid, action, target, done, error, win_error;
     DWORD procedure, userdata, object, vtable, object_window, columns;
@@ -33,6 +33,9 @@ void import_csv(ProbeState *request);
 int readable(const void *pointer, size_t size);
 void native_query(ProbeState *request, HWND window);
 void gui_query(ProbeState *request, HWND window);
+void emit_window(ProbeState *request, HWND window);
+void inspect_grid(ProbeState *request, HWND window);
+void grid_query(ProbeState *request, HWND window);
 void market_query(ProbeState *request, HWND window);
 void receipt_query(ProbeState *request, HWND window);
 int receipt_stop(void);

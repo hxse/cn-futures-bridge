@@ -8,7 +8,7 @@ import time
 
 from ..config import Settings
 from ..errors import BridgeError
-from .native import NativeClient, Window, Windows
+from .native import GridBinding, NativeClient, Window, Windows
 
 LOG = logging.getLogger(__name__)
 MENU_FLAGS = 4 | 8 | 16
@@ -25,7 +25,8 @@ class Gui:
     def __init__(self, native: NativeClient, settings: Settings):
         self.native = native
         self.settings = settings
-        self.bindings: dict[str, Window] = {}
+        self.bindings: dict[str, GridBinding] = {}
+        self.form_panel = 0
         self.timeout = settings.execution.step_timeout_ms / 1000
         self.interval = settings.execution.poll_interval_ms / 1000
         self.gap = settings.execution.gui_action_gap_ms / 1000
@@ -151,42 +152,68 @@ class Gui:
                 raise BridgeError("GUI_RESET_FAILED", "恢复后界面状态再次变化，停止本次操作")
         return snapshot
 
+    def reset_bindings(self) -> None:
+        self.bindings.clear()
+        self.form_panel = 0
+
+    def form_snapshot(self) -> Windows:
+        snapshot = self.native.form_windows(self.form_panel)
+        if snapshot is None and self.form_panel:
+            self.form_panel = 0
+            snapshot = self.native.form_windows(0)
+        if snapshot is None:
+            raise BridgeError("TERMINAL_DATA_INVALID", "标准下单板身份或层级未确认", 502)
+        root = self.main(snapshot).hwnd
+        panels = [w.parent for w in snapshot.windows if w.root == root and w.id == 3324
+                  and w.class_name == "Button" and w.text == "预埋/条件" and w.visible and w.enabled]
+        if len(panels) != 1:
+            raise BridgeError("TERMINAL_DATA_INVALID", "标准下单板不唯一", 502)
+        self.form_panel = panels[0]
+        return snapshot
+
+    def _grids(self, snapshot: Windows, identifier: int, columns: int, *, visible: bool = False) -> list[GridBinding]:
+        result: list[GridBinding] = []
+        for window in snapshot.windows:
+            if window.class_name != "ListCtrl" or window.id != identifier or (visible and not window.visible):
+                continue
+            binding = self.native.grid_binding(window.hwnd)
+            if binding.matches(identifier, columns):
+                result.append(binding)
+        return result
+
     def grid(self, table: str) -> Window:
         key, identifier, columns, filter_name, filter_key = TABLES[table]
-        snapshot = self.baseline()
-        candidates = [w for w in snapshot.windows if w.class_name == "ListCtrl" and w.id == identifier]
-        matches: list[Window] = []
-        for window in candidates:
-            if self.native.ask(f"inspect {window.hwnd}").columns == columns:
-                matches.append(window)
+        cached = self.bindings.get(table)
+        if cached is not None and cached.window is not None:
+            self.ensure_ready()
+            current = self.native.grid_binding(cached.window.hwnd)
+            if (current.matches(identifier, columns) and current.identity == cached.identity
+                    and current.filtered(filter_name)):
+                assert current.window is not None
+                return current.window
+            self.bindings.pop(table)
+        matches = self._grids(self.baseline(), identifier, columns)
         if len(matches) != 1:
             self.activate();self.key(key)
-            snapshot = self.baseline()
-            matches = [w for w in snapshot.windows if w.class_name == "ListCtrl" and w.id == identifier
-                       and w.visible and self.native.ask(f"inspect {w.hwnd}").columns == columns]
+            matches = self._grids(self.baseline(), identifier, columns, visible=True)
         if len(matches) != 1:
             raise BridgeError("TERMINAL_DATA_INVALID", "表格身份或列布局与固定版本不符", 502)
-        window = matches[0]
-        if filter_name:
-            filters = [w for w in snapshot.windows if w.parent == window.parent and w.class_name == "Button"
-                       and w.text.startswith(filter_name)]
-            if len(filters) != 1 or filters[0].checked != 1:
-                self.activate();self.key(key)
-                if filter_key:
-                    self.key(filter_key)
-                snapshot = self.native.windows()
-                filters = [w for w in snapshot.windows if w.parent == window.parent and w.class_name == "Button"
-                           and w.text.startswith(filter_name)]
-                if len(filters) != 1 or filters[0].checked != 1:
-                    raise BridgeError("TERMINAL_DATA_INVALID", "无法确认表格完整筛选范围", 502)
-        self.bindings[table] = window
-        return window
+        if not matches[0].filtered(filter_name):
+            self.activate();self.key(key)
+            if filter_key:
+                self.key(filter_key)
+            matches = self._grids(self.baseline(), identifier, columns)
+            if len(matches) != 1 or not matches[0].filtered(filter_name):
+                raise BridgeError("TERMINAL_DATA_INVALID", "无法确认表格完整筛选范围", 502)
+        binding = matches[0]
+        self.bindings[table] = binding
+        assert binding.window is not None
+        return binding.window
 
     def select(self, table: str, window: Window, index: int) -> None:
         self.activate();self.key(TABLES[table][0])
+        # 原生 select 已在同一次 GUI 调用核对唯一选中数、索引和焦点。
         self.native.select(window.hwnd, index)
-        if self.native.windows().focus != window.hwnd:
-            raise BridgeError("GUI_RESET_FAILED", "表格选择后的焦点不符")
 
     def close_dialog(self, window: Window) -> None:
         self.activate(window.text);self.key("Escape")
@@ -210,8 +237,11 @@ class Gui:
         if result.data.get("focused") is not True:
             raise BridgeError("GUI_RESET_FAILED", "资金查询按钮未取得焦点")
         self.key("space")
-        self.wait(lambda: bool(self.dialogs()), "资金查询窗口未按时出现")
-        snapshot = self.managed_snapshot()
+        def opened() -> bool:
+            nonlocal snapshot
+            snapshot = self.managed_snapshot()
+            return bool(self.dialogs(snapshot))
+        self.wait(opened, "资金查询窗口未按时出现")
         dialogs = self.dialogs(snapshot)
         if len(dialogs) != 1:
             raise BridgeError("GUI_RESET_FAILED", "资金查询出现未知窗口组合")
@@ -226,7 +256,8 @@ class Gui:
             self.close_dialog(dialog)
             raise BridgeError("TERMINAL_DATA_INVALID", "资金详情控件不完整", 502)
         text = fields[0].text
-        self.close_dialog(dialog)
+        # 正文读取完成后，复用同一精确 WM_CLOSE 模板及关闭回读。
+        self.ensure_ready()
         return text
 
     def prepare_login(self) -> tuple[int, list[Window]]:

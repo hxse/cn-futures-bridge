@@ -97,11 +97,13 @@ class CsvVerifier:
             previous = signature
         return latest, "changing"
 
-    def snapshot(self, request: MarketOrder | CancelByExchange, steps: Steps) -> AccountSnapshot:
+    def snapshot(self, request: MarketOrder | CancelByExchange, steps: Steps, *, before: bool = False) -> AccountSnapshot:
         def relevant(row: Order | Trade | Position) -> bool:
             return row.exchange_id == request.exchange_id and row.instrument_id == request.instrument_id
-        orders = [order_row(row) for row in self.read("orders", steps)]
-        trades = [trade_row(row) for row in self.read("trades", steps)]
+        # 报单身份来自实际引用；前置委托/成交差集已不参与确认。
+        orders = [] if before else [order_row(row) for row in self.read("orders", steps)]
+        trades = ([trade_row(row) for row in self.read("trades", steps)]
+                  if not before and isinstance(request, MarketOrder) else [])
         positions = [position_row(row) for row in self.read("positions", steps)]
         return AccountSnapshot(orders=[row for row in orders if relevant(row)],
                                trades=[row for row in trades if relevant(row)],

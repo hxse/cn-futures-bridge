@@ -8,14 +8,8 @@
 static ProbeState *active;
 static unsigned count;
 static int document_pending;
-static void add_window(HWND w) {
-    if(count>=512){active->error=30;return;}
+void emit_window(ProbeState *s,HWND w) {
     char cls[80];GetClassNameA(w,cls,80);
-    int control_id=GetDlgCtrlID(w);
-    int filter=(control_id>=3301&&control_id<=3325)
-        ||(control_id>=3400&&control_id<3550)||(control_id>=4100&&control_id<4220);
-    if(!IsWindowVisible(w) && strcmp(cls,"ListCtrl") && !filter)return;
-    if(count++)emit(active,",");
     RECT r;GetWindowRect(w,&r);
     LONG style=GetWindowLongA(w,GWL_STYLE);
     int secret=!strcmp(cls,"Edit")&&(style&ES_PASSWORD);
@@ -24,19 +18,29 @@ static void add_window(HWND w) {
         if(GetDlgCtrlID(w)==7201)SendMessageA(w,WM_GETTEXT,sizeof(text),(LPARAM)text);
         else GetWindowTextA(w,text,256);
     }
-    emit(active,"{\"hwnd\":%lu,\"parent\":%lu,\"root\":%lu,\"checked\":%ld,\"id\":%d,\"class_name\":\"%s\",\"visible\":%s,\"enabled\":%s,\"password\":%s,\"rect\":[%ld,%ld,%ld,%ld],\"text_hex\":\"",
+    emit(s,"{\"hwnd\":%lu,\"parent\":%lu,\"root\":%lu,\"checked\":%ld,\"id\":%d,\"class_name\":\"%s\",\"visible\":%s,\"enabled\":%s,\"password\":%s,\"rect\":[%ld,%ld,%ld,%ld],\"text_hex\":\"",
          (DWORD)(uintptr_t)w,(DWORD)(uintptr_t)GetParent(w),(DWORD)(uintptr_t)GetAncestor(w,GA_ROOT),!strcmp(cls,"Button")?(long)SendMessageA(w,BM_GETCHECK,0,0):0,GetDlgCtrlID(w),cls,IsWindowVisible(w)?"true":"false",IsWindowEnabled(w)?"true":"false",secret?"true":"false",r.left,r.top,r.right,r.bottom);
-    hex_text(active,text);emit(active,"\",\"items_hex\":[");
+    hex_text(s,text);emit(s,"\",\"items_hex\":[");
     if(!strcmp(cls,"ComboBox")){
         int n=(int)SendMessageA(w,CB_GETCOUNT,0,0);
         for(int i=0;i<n&&i<64;i++){
-            if(i){emit(active,",");}
-            emit(active,"\"");
-            if(SendMessageA(w,CB_GETLBTEXTLEN,i,0)<256){text[0]=0;SendMessageA(w,CB_GETLBTEXT,i,(LPARAM)text);hex_text(active,text);}
-            emit(active,"\"");
+            if(i){emit(s,",");}
+            emit(s,"\"");
+            if(SendMessageA(w,CB_GETLBTEXTLEN,i,0)<256){text[0]=0;SendMessageA(w,CB_GETLBTEXT,i,(LPARAM)text);hex_text(s,text);}
+            emit(s,"\"");
         }
     }
-    emit(active,"]}");
+    emit(s,"]}");
+}
+static void add_window(HWND w) {
+    if(count>=512){active->error=30;return;}
+    char cls[80];GetClassNameA(w,cls,80);
+    int control_id=GetDlgCtrlID(w);
+    int filter=(control_id>=3301&&control_id<=3325)
+        ||(control_id>=3400&&control_id<3550)||(control_id>=4100&&control_id<4220);
+    if(!IsWindowVisible(w)&&strcmp(cls,"ListCtrl")&&!filter)return;
+    if(count++)emit(active,",");
+    emit_window(active,w);
 }
 static BOOL CALLBACK child(HWND w,LPARAM unused){add_window(w);return active->error!=30;}
 static BOOL CALLBACK top(HWND w,LPARAM unused){
@@ -47,7 +51,54 @@ static BOOL CALLBACK top(HWND w,LPARAM unused){
     }
     return active->error!=30;
 }
+
+typedef struct {ProbeState *request;HWND main,panel;unsigned matches;} FormScope;
+static int valid_panel(FormScope *scope,HWND panel){
+    DWORD pid=0,thread=GetWindowThreadProcessId(panel,&pid);
+    if(!IsWindow(panel)||pid!=scope->request->pid||thread!=scope->request->gui_thread
+        ||panel==scope->main||GetAncestor(panel,GA_ROOT)!=scope->main
+        ||!IsWindowVisible(panel)||!IsWindowEnabled(panel)||!GetDlgItem(panel,3320))return 0;
+    HWND button=GetDlgItem(panel,3324);WCHAR cls[80]={0},text[80]={0};
+    GetClassNameW(button,cls,80);GetWindowTextW(button,text,80);
+    return button&&GetParent(button)==panel&&IsWindowVisible(button)&&IsWindowEnabled(button)
+        &&!wcscmp(cls,L"Button")&&!wcscmp(text,L"预埋/条件");
+}
+static BOOL CALLBACK find_panel(HWND w,LPARAM context){
+    FormScope *scope=(FormScope *)context;
+    if(GetDlgCtrlID(w)==3324&&valid_panel(scope,GetParent(w))){
+        scope->panel=GetParent(w);scope->matches++;
+    }
+    return TRUE;
+}
+static BOOL CALLBACK form_child(HWND w,LPARAM context){
+    HWND panel=(HWND)context,parent=GetParent(w);int id=GetDlgCtrlID(w);
+    if(!((id>=3301&&id<=3325)||id==1472))return TRUE;
+    if(parent!=panel){
+        WCHAR cls[80];GetClassNameW(w,cls,80);
+        if(wcscmp(cls,L"Edit")||GetParent(parent)!=panel||GetDlgCtrlID(parent)!=id)return TRUE;
+    }
+    add_window(w);return active->error!=30;
+}
+static void form_windows(ProbeState *s,HWND main){
+    unsigned long raw=0;char tail;
+    if(sscanf(s->argument,"%lu %c",&raw,&tail)!=1){s->error=32;return;}
+    FormScope scope={s,main,NULL,0};
+    if(GetAncestor(main,GA_ROOT)!=main||!matches_main(s,main)||!IsWindowEnabled(main)){
+        emit(s,"{\"valid\":false}");return;
+    }
+    if(raw){scope.panel=(HWND)(uintptr_t)raw;scope.matches=valid_panel(&scope,scope.panel);}
+    else EnumChildWindows(main,find_panel,(LPARAM)&scope);
+    if(scope.matches!=1){emit(s,"{\"valid\":false}");return;}
+    active=s;count=0;emit(s,"{\"valid\":true,\"windows\":[");
+    add_window(main);add_window(scope.panel);EnumChildWindows(scope.panel,form_child,(LPARAM)scope.panel);
+    GUITHREADINFO info={0};info.cbSize=sizeof(info);
+    if(!GetGUIThreadInfo(s->gui_thread,&info))s->error=30;
+    emit(s,"],\"focus\":%lu,\"flags\":%lu,\"capture\":%lu}",
+         (DWORD)(uintptr_t)info.hwndFocus,info.flags,(DWORD)(uintptr_t)info.hwndCapture);
+    active=NULL;
+}
 void gui_query(ProbeState *s,HWND window){
+    if(s->action==FORM_WINDOWS){form_windows(s,window);return;}
     if(s->action==WINDOWS||s->action==STARTUP_DONE||s->action==MANAGED_WINDOWS){
         reset_notice_state(s);
         active=s;count=0;document_pending=0;emit(s,"{\"windows\":[");EnumWindows(top,0);

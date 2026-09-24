@@ -63,7 +63,7 @@ class MarketActions:
             LOG.info("限价预埋单原生条件：%s", native.model_dump_json(),
                      extra={"request_id": steps.request_id, "action": steps.action, "step": "verify_ioc_parameters"})
             steps.parked_id = validate_preorder(request, native)
-        return self.orders.send_local(request, steps)
+        return self.orders.send_local(request, steps, after)
 
     def close_dialog(self, steps: Steps) -> None:
         if steps.market_dialog is not None:

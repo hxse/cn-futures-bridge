@@ -45,38 +45,6 @@ static int compatible(void) {
         && fn[14]==0x81 && fn[15]==0xec && fn[16]==0x48 && fn[17]==0x03;
 }
 
-static int valid_object(uintptr_t pointer, HWND window) {
-    BYTE *base=(BYTE *)GetModuleHandleW(NULL);
-    if (!readable((void *)pointer,0x4e4)) return 0;
-    uintptr_t vtable=*(DWORD *)pointer;
-    return vtable>=(uintptr_t)base+0x819000 && vtable<(uintptr_t)base+0x953854
-        && *(HWND *)(pointer+4)==window
-        && *(int *)(pointer+0x458)>0 && *(int *)(pointer+0x458)<200;
-}
-
-static void inspect(HWND window) {
-    state->procedure=(DWORD)GetWindowLongPtrA(window,GWLP_WNDPROC);
-    state->userdata=(DWORD)GetWindowLongPtrW(window,GWLP_USERDATA);
-    state->object=0;
-    state->columns=state->vtable=state->object_window=0;
-    BYTE *p=(BYTE *)(uintptr_t)state->procedure;
-    memset(state->procedure_bytes,0,16);
-    if (readable(p,16)) {
-        memcpy(state->procedure_bytes,p,16);
-        /* WTL 的 x86 thunk 将窗口参数改写为实例指针。 */
-        if (p[0]==0xc7 && p[1]==0x44 && p[2]==0x24 && p[3]==0x04 && p[8]==0xe9) {
-            DWORD object; memcpy(&object,p+4,4);
-            if (valid_object(object,window)) state->object=object;
-        }
-    }
-    if (!state->object && valid_object(state->userdata,window)) state->object=state->userdata;
-    if (state->object) {
-        state->vtable=*(DWORD *)(uintptr_t)state->object;
-        state->object_window=*(DWORD *)(uintptr_t)(state->object+4);
-        state->columns=*(DWORD *)(uintptr_t)(state->object+0x458);
-    }
-}
-
 static void handle(HWND window) {
     if (!state) {
         mapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,PROBE_MAP);
@@ -106,7 +74,7 @@ static void handle(HWND window) {
         GetClassNameW(window,cls,80);
         GetWindowTextW(GetAncestor(window,GA_ROOT),title,256);
         if (wcscmp(cls,L"ListCtrl") || !matches_main(state,window)) state->error=3;
-        else inspect(window);
+        else inspect_grid(state,window);
     }
     if (!state->error && state->action==EXPORT) {
         size_t length=strlen(state->path);
@@ -160,6 +128,8 @@ static void handle(HWND window) {
     }
     if (!state->error && state->action>=SESSION && state->action<=INSTRUMENT) native_query(state,window);
     if (!state->error && state->action>=WINDOWS && state->action<=MANAGED_WINDOWS) gui_query(state,window);
+    if (!state->error && state->action==FORM_WINDOWS) gui_query(state,window);
+    if (!state->error && state->action==GRID_BINDING) grid_query(state,window);
     if (!state->error && (state->action==PARKED || state->action==MENU)) market_query(state,window);
     if (!state->error && state->action==RECEIPT) receipt_query(state,window);
     if (!state->error && state->action==TRACKING) tracking_query(state,window);

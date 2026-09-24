@@ -146,3 +146,25 @@ def test_query_stability_and_missing_csv(tmp_path: Path) -> None:
         with pytest.raises(BridgeError) as error:
             position_row(row)
         assert error.value.code == "TERMINAL_DATA_INVALID"
+
+
+def test_snapshots_only_read_facts_used_by_each_stage(tmp_path: Path) -> None:
+    calls: list[str] = []
+    def read(table: str, context: Steps) -> list[dict[str, str]]:
+        calls.append(table)
+        return ([position("10"), {**position("20"), "合约": "m2705"}] if table == "positions"
+                else [order("124")] if table == "orders" else [])
+    verifier = CsvVerifier(read, ExecutionConfig(), lambda key: tracked())
+    context = steps(tmp_path)
+    before = verifier.snapshot(request(), context, before=True)
+    assert calls == ["positions"] and len(before.positions) == 1
+    assert before.orders == [] and before.trades == []
+    calls.clear()
+    after = verifier.snapshot(request(), context)
+    assert calls == ["orders", "trades", "positions"] and after.orders[0].order_id == "124"
+    assert after.positions == before.positions
+    calls.clear()
+    cancel = CancelByExchange(by="exchange_order", exchange_id="DCE", instrument_id="m2701", order_sys_id="124")
+    after = verifier.snapshot(cancel, context)
+    assert calls == ["orders", "positions"] and after.trades == []
+    assert after.orders[0].order_id == "124" and after.positions == before.positions

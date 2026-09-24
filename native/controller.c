@@ -43,6 +43,8 @@ int wmain(int argc,WCHAR **argv){
         DWORD action=0;
         if(!strcmp(command,"windows"))action=WINDOWS;
         else if(!strcmp(command,"managed_windows"))action=MANAGED_WINDOWS;
+        else if(!strcmp(command,"form_windows"))action=FORM_WINDOWS;
+        else if(!strcmp(command,"grid_binding"))action=GRID_BINDING;
         else if(!strcmp(command,"gui_state"))action=GUI_STATE;
         else if(!strcmp(command,"recover_gui"))action=GUI_RECOVER;
         else if(!strcmp(command,"session"))action=SESSION;
@@ -72,7 +74,7 @@ int wmain(int argc,WCHAR **argv){
             Sleep(10);
         }while(TRUE);
         if(!main_window||target_thread!=previous_thread){puts("{\"error\":91,\"done\":true,\"data\":{}}");fflush(stdout);break;}
-        if(action==SESSION||action==PRODUCT||action==INSTRUMENT||action==PARKED||action==RECEIPT||action==TRACKING)sscanf(line,"%31s %2047[^\r\n]",command,argument);
+        if(action==SESSION||action==PRODUCT||action==INSTRUMENT||action==PARKED||action==RECEIPT||action==TRACKING||action==FORM_WINDOWS||action==GRID_BINDING)sscanf(line,"%31s %2047[^\r\n]",command,argument);
         else if(action!=WINDOWS&&action!=STOP)sscanf(line,"%31s %lu %2047[^\r\n]",command,&target,argument);
         HWND window=target?(HWND)(uintptr_t)target:main_window;DWORD pid=0;
         GetWindowThreadProcessId(window,&pid);

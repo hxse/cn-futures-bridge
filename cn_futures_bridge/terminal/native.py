@@ -89,6 +89,33 @@ class Windows(BaseModel):
     document_pending: bool = False
 
 
+class GridBinding(BaseModel):
+    valid: bool
+    window: Window | None = None
+    object_address: int = Field(default=0, alias="object")
+    procedure: int = 0
+    vtable: int = 0
+    columns: int = 0
+    filters: list[Window] = Field(default_factory=list)
+
+    @property
+    def identity(self) -> tuple[int, ...]:
+        window = self.window
+        return (() if window is None else (window.hwnd, window.parent, window.root, window.id,
+                self.object_address, self.procedure, self.vtable, self.columns))
+
+    def matches(self, identifier: int, columns: int) -> bool:
+        return bool(self.valid and self.window and self.window.id == identifier
+                    and self.window.class_name == "ListCtrl" and self.columns == columns
+                    and self.object_address and self.procedure and self.vtable)
+
+    def filtered(self, name: str | None) -> bool:
+        if name is None:
+            return True
+        windows = [w for w in self.filters if w.class_name == "Button" and w.text.startswith(name)]
+        return len(windows) == 1 and windows[0].checked == 1
+
+
 class GuiState(BaseModel):
     main: int
     main_count: int
@@ -150,6 +177,7 @@ class NativeClient:
         self.notice_counts = (0, 0, 0, 0)
         self.order_notice_count = 0
         self.empty_settlement_count = 0
+        self.timings: dict[str, tuple[int, float]] = {}
         self.startup_deadline: float | None = None
         self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
                         WINEPREFIX=str(settings.wine_prefix), WINEDEBUG="-all",
@@ -207,6 +235,15 @@ class NativeClient:
         return line
 
     def ask(self, command: str) -> NativeReply:
+        started = time.perf_counter()
+        try:
+            return self._ask(command)
+        finally:
+            name = command.partition(" ")[0]
+            count, seconds = self.timings.get(name, (0, 0.0))
+            self.timings[name] = count+1, seconds+time.perf_counter()-started
+
+    def _ask(self, command: str) -> NativeReply:
         if self.poisoned:
             raise BridgeError("GUI_UNRESPONSIVE", "原生会话已隔离，须受控重启后恢复")
         process = self.process
@@ -275,6 +312,13 @@ class NativeClient:
 
     def managed_windows(self) -> Windows:
         return Windows.model_validate(self.ask("managed_windows").data)
+
+    def form_windows(self, panel: int) -> Windows | None:
+        result = self.ask(f"form_windows {panel}")
+        return Windows.model_validate(result.data) if result.data.get("valid") is True else None
+
+    def grid_binding(self, window: int) -> GridBinding:
+        return GridBinding.model_validate(self.ask(f"grid_binding {window}").data)
 
     def gui_state(self) -> GuiState:
         return GuiState.model_validate(self.ask("gui_state").data)

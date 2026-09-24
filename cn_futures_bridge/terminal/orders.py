@@ -80,7 +80,7 @@ class OrderActions:
                 raise BridgeError("ORDER_REJECTED", "终端拒绝导入，未发送委托", 422, submission_status="rejected")
             self.bind_local(before, after, request, steps, ("未启动",))
             steps.parked_id = validate_preorder(request, parked_snapshot(self.gui.native, cursor))
-        return self.send_local(request, steps)
+        return self.send_local(request, steps, after)
 
     def bind_local(self, before: Rows, after: Rows, request: MarketOrder, steps: Steps,
                    statuses: tuple[str, ...]) -> None:
@@ -103,9 +103,9 @@ class OrderActions:
         steps.capture_armed = False
         return result
 
-    def send_local(self, request: LimitOrder, steps: Steps) -> SubmissionResult:
+    def send_local(self, request: LimitOrder, steps: Steps, candidates: Rows) -> SubmissionResult:
         with steps.step("locate"):
-            self.select_local(steps)
+            self.select_local(steps, candidates)
         with steps.step("send"):
             assert steps.parked_id is not None and steps.session is not None
             self.gui.native.ask(f"receipt arm {steps.parked_id}")
@@ -133,8 +133,8 @@ class OrderActions:
             raise BridgeError("ORDER_IDENTITY_AMBIGUOUS", "本次预埋记录缺失或出现重复", 409)
         return matches[0]
 
-    def select_local(self, steps: Steps) -> None:
-        rows = self.read("preorders", steps)
+    def select_local(self, steps: Steps, rows: Rows) -> None:
+        # 刚核对过的表仅用于定位候选；选中后的新 CSV 才决定是否允许发送。
         index, row = self.owned(rows, steps)
         self.gui.select("preorders", self.gui.grid("preorders"), index)
         fresh = self.read("preorders", steps)
@@ -145,7 +145,7 @@ class OrderActions:
     def cleanup(self, steps: Steps) -> None:
         if steps.owned_row is None:
             return
-        self.select_local(steps)
+        self.select_local(steps, self.read("preorders", steps))
         self.gui.key("alt+x")
         identity = local_identity(steps.owned_row)
         if any(local_identity(row) == identity for row in self.read("preorders", steps)):

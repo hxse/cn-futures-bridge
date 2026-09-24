@@ -12,7 +12,7 @@ from typing import IO
 import uuid
 
 from .config import Settings
-from .terminal_logs import closed_logs
+from .terminal_logs import closed_logs, log_paths
 
 
 class LogStore(logging.Handler):
@@ -49,18 +49,21 @@ class LogStore(logging.Handler):
                     raise OSError("日志记录超过单文件预算")
                 if self.current.exists() and self.current.stat().st_size + len(body) > self.file_maximum:
                     self.current = self._new_path()
-                files = sorted(p for p in self.root.glob("cfb-*.jsonl") if p.is_file() and not p.is_symlink())
-                external, active = closed_logs(self.root, self.terminal_logs)
-                files = sorted(files + external, key=lambda p: p.stat().st_mtime_ns)
-                total = sum(p.stat().st_size for p in files)
-                total += sum(p.stat().st_size for p in active)
-                for path in files:
-                    if total + len(body) <= self.maximum:
-                        break
-                    if path == self.current:
-                        self.current = self._new_path()
-                    total -= path.stat().st_size
-                    path.unlink()
+                files = [p for p in self.root.glob("cfb-*.jsonl") if p.is_file() and not p.is_symlink()]
+                external = log_paths(self.root, self.terminal_logs)
+                total = sum(p.stat().st_size for p in files + external)
+                if total + len(body) > self.maximum:
+                    closed, _ = closed_logs(external)
+                    # 句柄扫描期间终端可能继续写入，淘汰前重新计量。
+                    sizes = {p: p.stat() for p in files + external}
+                    total = sum(info.st_size for info in sizes.values())
+                    for path in sorted(files + closed, key=lambda p: sizes[p].st_mtime_ns):
+                        if total + len(body) <= self.maximum:
+                            break
+                        if path == self.current:
+                            self.current = self._new_path()
+                        path.unlink()
+                        total -= sizes[path].st_size
                 if total + len(body) > self.maximum:
                     raise OSError("日志总预算耗尽")
                 with self.current.open("ab") as stream:
@@ -94,9 +97,11 @@ class LogStore(logging.Handler):
             worker.start()
 
     def maintain(self) -> None:
-        _, active = closed_logs(self.root, self.terminal_logs)
-        if any(path.stat().st_size > self.file_maximum for path in active):
-            self.failed = True
+        with self.mutex, (self.root / ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            _, active = closed_logs(log_paths(self.root, self.terminal_logs))
+            if any(path.stat().st_size > self.file_maximum for path in active):
+                self.failed = True
         # 周期性写入同时执行总预算淘汰，所有日志共用同一锁。
         logging.getLogger(__name__).info("日志容量检查", extra={"event": "maintenance"})
 

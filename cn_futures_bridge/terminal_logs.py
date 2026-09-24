@@ -7,7 +7,7 @@ TERMINAL_LOG = re.compile(r"\d{4}\.\d{2}\.\d{2}-[\d.]+\.log")
 LEGACY_NAMES = {"terminal.log", "wineboot.log", "xvfb.log", "openbox.log", "vnc.log", "novnc.log"}
 
 
-def closed_logs(root: Path, terminal: Path) -> tuple[list[Path], list[Path]]:
+def log_paths(root: Path, terminal: Path) -> list[Path]:
     candidates = [p for p in root.glob("*.log") if p.name in LEGACY_NAMES]
     directories = {terminal, root.parent / "terminal" / "logs"}
     directories.update((root.parent / "sessions").glob("*/terminal/logs"))
@@ -15,7 +15,11 @@ def closed_logs(root: Path, terminal: Path) -> tuple[list[Path], list[Path]]:
         if directory.is_symlink() or not directory.resolve().is_relative_to(root.parent.resolve()):
             continue
         candidates.extend(p for p in directory.glob("*.log") if TERMINAL_LOG.fullmatch(p.name))
-    candidates = [p for p in candidates if p.is_file() and not p.is_symlink()]
+    return list(dict.fromkeys(p for p in candidates if p.is_file() and not p.is_symlink()))
+
+
+def closed_logs(candidates: list[Path]) -> tuple[list[Path], list[Path]]:
+    # 仅淘汰与周期维护需要区分活动句柄；日常容量核算只需路径和大小。
     if not candidates:
         return [], []
     by_path = {p.resolve(): p for p in candidates}
