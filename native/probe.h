@@ -2,10 +2,10 @@
 #define CFB_NATIVE_H
 #include <windows.h>
 #include <stdint.h>
-#define PROBE_MAP L"Local\\CNFB_Terminal_20260924_4"
-#define PROBE_MESSAGE L"CNFB_Terminal_20260924_4"
+#define PROBE_MAP L"Local\\CNFB_Terminal_20260924_6"
+#define PROBE_MESSAGE L"CNFB_Terminal_20260924_6"
 #define PROBE_MAGIC 0x434e4642u
-enum { INSPECT=1, EXPORT=2, ARM=3, COUNTS=4, STOP=5, IMPORT=6, SESSION=7, PRODUCT=8, INSTRUMENT=9, SELECT_ROW=10, WINDOWS=11, FOCUS=12, SET_TEXT=13, SELECT_COMBO=14, STARTUP_DONE=15, MANAGED_WINDOWS=16, PARKED=17, MENU=18, RECEIPT=19, TRACKING=20 };
+enum { INSPECT=1, EXPORT=2, ARM=3, COUNTS=4, STOP=5, IMPORT=6, SESSION=7, PRODUCT=8, INSTRUMENT=9, SELECT_ROW=10, WINDOWS=11, FOCUS=12, SET_TEXT=13, SELECT_COMBO=14, STARTUP_DONE=15, MANAGED_WINDOWS=16, PARKED=17, MENU=18, RECEIPT=19, TRACKING=20, GUI_STATE=21, GUI_RECOVER=22 };
 typedef struct {
     DWORD magic, pid, action, target, done, error, win_error;
     DWORD procedure, userdata, object, vtable, object_window, columns;
@@ -25,6 +25,8 @@ typedef struct {
     DWORD trade_notice_confirm_count,trade_notice_closed_count,trade_notice_window,trade_notice_phase;
     DWORD order_notice_count,order_notice_kind;
     char order_notice_text[4096];
+    DWORD empty_settlement_window,empty_settlement_count;
+    ULONGLONG empty_settlement_since;
     ULONGLONG startup_until;
 } ProbeState;
 void import_csv(ProbeState *request);
@@ -35,6 +37,8 @@ void market_query(ProbeState *request, HWND window);
 void receipt_query(ProbeState *request, HWND window);
 int receipt_stop(void);
 void tracking_query(ProbeState *request, HWND window);
+void readiness_query(ProbeState *request, HWND window);
+void reset_notice_state(ProbeState *request);
 void emit(ProbeState *request, const char *format, ...);
 void hex_text(ProbeState *request, const char *value);
 uintptr_t window_object(HWND window, int dialog);

@@ -97,7 +97,7 @@ def worker_main(connection: Connection, settings: Settings, generation: str) -> 
                     executor.resume()
                 elif command.kind == "probe" and not executor.blocked and settings.account.configured:
                     executor.validate_session()
-                    executor.gui.baseline()
+                    executor.gui.ensure_ready()
                 elif command.kind == "execute":
                     if time.monotonic() > command.deadline:
                         raise BridgeError("QUEUE_TIMEOUT", "请求派发期限已过，尚未执行", 504)

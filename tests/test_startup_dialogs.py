@@ -9,7 +9,13 @@ from cn_futures_bridge.config import BridgeConfig, Settings
 from cn_futures_bridge.errors import BridgeError
 from cn_futures_bridge.logging_store import LogStore
 from cn_futures_bridge.terminal.gui import Gui
-from cn_futures_bridge.terminal.native import NativeClient, NativeReply, Window, Windows
+from cn_futures_bridge.terminal.native import GuiState, NativeClient, NativeReply, Window, Windows
+
+
+def unknown_state() -> GuiState:
+    return GuiState(main=1, main_count=1, enabled=False, focus=2, flags=0, capture=0,
+                    menu_owned=False, modifiers=0, dialogs=1, unknown_dialogs=1,
+                    funds=0, funds_count=0, document_pending=False)
 
 
 def desktop(title: str = "", *, pending: bool = False) -> Windows:
@@ -38,6 +44,7 @@ def test_startup_waits_for_document_but_rejects_unknown_dialog(tmp_path: Path, m
     snapshots = iter([pending, ready])
     assert gui.baseline() == ready
     monkeypatch.setattr(native, "managed_windows", lambda: desktop("确认下单"))
+    monkeypatch.setattr(native, "gui_state", unknown_state)
     with pytest.raises(BridgeError) as error:
         gui.baseline()
     assert error.value.code == "GUI_RESET_FAILED"
@@ -64,6 +71,7 @@ def test_late_information_window_waits_for_close(tmp_path: Path, monkeypatch: py
     assert commands == ["managed_windows"] * 3
     # 同名但不满足原生模板的窗口不能被基线当作已经处理。
     monkeypatch.setattr(native, "managed_windows", lambda: desktop("保证金监控中心"))
+    monkeypatch.setattr(native, "gui_state", unknown_state)
     with pytest.raises(BridgeError) as error:
         gui.baseline()
     assert error.value.code == "GUI_RESET_FAILED"
@@ -108,6 +116,7 @@ def test_trade_notice_waits_for_checkbox_and_confirmation(tmp_path: Path, monkey
     monkeypatch.setattr(native, "ask", answer)
     assert gui.baseline() == ready and commands == ["managed_windows"] * 3
     monkeypatch.setattr(native, "managed_windows", lambda: desktop("确认下单"))
+    monkeypatch.setattr(native, "gui_state", unknown_state)
     with pytest.raises(BridgeError) as error:
         gui.baseline()
     assert error.value.code == "GUI_RESET_FAILED"

@@ -11,6 +11,8 @@ from ..errors import BridgeError
 from .native import NativeClient, Window, Windows
 
 LOG = logging.getLogger(__name__)
+MENU_FLAGS = 4 | 8 | 16
+MODIFIER_KEYS = ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R")
 
 TABLES = {"orders": ("F5", 3501, 16, "全部", "alt+a"),
           "working": ("F6", 3501, 9, None, None),
@@ -71,7 +73,56 @@ class Gui:
     def dialogs(self, snapshot: Windows | None = None) -> list[Window]:
         snapshot = snapshot or self.managed_snapshot()
         return [w for w in snapshot.windows if w.root == w.hwnd and w.class_name == "#32770"
-                and w.visible and w.text]
+                and w.visible]
+
+    def ensure_ready(self, *, keyboard: bool = False) -> None:
+        if self.native.poisoned:
+            raise BridgeError("GUI_UNRESPONSIVE", "旧原生调用未退出，禁止复位")
+        started = time.monotonic()
+        deadline = self.native.startup_deadline or started + self.timeout
+        posted: set[tuple[str, int]] = set()
+        released = False
+        while True:
+            if time.monotonic() >= deadline:
+                raise BridgeError("GUI_RESET_FAILED", "界面恢复未在期限内完成")
+            state = self.native.gui_state()
+            if state.main_count != 1 or not state.main:
+                raise BridgeError("GUI_RESET_FAILED", "未确认唯一配置主窗口，禁止复位")
+            if state.unknown_dialogs or state.funds_count > 1:
+                raise BridgeError("GUI_RESET_FAILED", "存在未知或不唯一的阻塞窗口，禁止自动确认")
+            action: tuple[str, int] | None = None
+            if state.document_pending:
+                pass
+            elif state.flags & MENU_FLAGS:
+                if not state.menu_owned or state.dialogs or state.flags & 2:
+                    raise BridgeError("GUI_RESET_FAILED", "菜单归属或界面状态不明确，禁止取消")
+                action = ("menu", state.main)
+            elif state.funds_count == 1 and not state.capture and not state.flags & 2:
+                action = ("funds", state.funds)
+            elif not state.enabled or state.dialogs or state.capture or state.flags & 2:
+                raise BridgeError("GUI_RESET_FAILED", "界面仍被未知窗口或鼠标操作占用")
+            elif keyboard and state.modifiers:
+                if not released:
+                    self._xdo("keyup", *MODIFIER_KEYS)
+                    self.touched = released = True
+                    LOG.info("已释放残留修饰键", extra={"step": "gui_recovery", "event": "submitted"})
+                    continue
+            else:
+                LOG.info("界面检查完成，恢复动作=%s", len(posted) + int(released),
+                         extra={"step": "gui_readiness", "event": "end",
+                                "duration_ms": (time.monotonic()-started)*1000})
+                return
+            if action is not None and action not in posted:
+                self.native.ask(f"recover_gui {action[1]}")
+                posted.add(action)
+                LOG.info("已投递界面恢复：类型=%s，窗口=%s", *action,
+                         extra={"step": "gui_recovery", "event": "submitted"})
+                continue
+            # 恢复后先立即回读；只有仍未结束的动作或通知才轮询等待。
+            time.sleep(min(self.interval, max(0, deadline-time.monotonic())))
+
+    def drain_notices(self) -> None:
+        self.wait(lambda: not self.native.gui_state().document_pending, "已识别通知未在期限内关闭")
 
     def managed_snapshot(self) -> Windows:
         # 已知结算单和附属网页仅由持有执行权的流程处理；暂停时不轮询。
@@ -92,8 +143,12 @@ class Gui:
     def baseline(self) -> Windows:
         snapshot = self.managed_snapshot()
         main = self.main(snapshot)
-        if not main.enabled or self.dialogs(snapshot) or snapshot.flags & 4:
-            raise BridgeError("GUI_RESET_FAILED", "存在未归属本次操作的窗口或菜单，请暂停后人工核对")
+        if not main.enabled or self.dialogs(snapshot) or snapshot.flags & (MENU_FLAGS | 2) or snapshot.capture:
+            self.ensure_ready()
+            snapshot = self.managed_snapshot()
+            if (not self.main(snapshot).enabled or self.dialogs(snapshot)
+                    or snapshot.flags & (MENU_FLAGS | 2) or snapshot.capture):
+                raise BridgeError("GUI_RESET_FAILED", "恢复后界面状态再次变化，停止本次操作")
         return snapshot
 
     def grid(self, table: str) -> Window:
@@ -138,9 +193,11 @@ class Gui:
         self.wait(lambda: all(w.hwnd != window.hwnd for w in self.dialogs()), "本次窗口未关闭")
 
     def finish(self) -> None:
+        if self.native.poisoned:
+            raise BridgeError("GUI_UNRESPONSIVE", "旧原生调用未退出，禁止收尾按键")
         if self.touched:
-            self._xdo("keyup", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R")
-        self.baseline()
+            self._xdo("keyup", *MODIFIER_KEYS)
+        self.ensure_ready(keyboard=self.touched)
         self.touched = False
 
     def balance_text(self) -> str:
@@ -170,7 +227,6 @@ class Gui:
             raise BridgeError("TERMINAL_DATA_INVALID", "资金详情控件不完整", 502)
         text = fields[0].text
         self.close_dialog(dialog)
-        self.finish()
         return text
 
     def prepare_login(self) -> tuple[int, list[Window]]:

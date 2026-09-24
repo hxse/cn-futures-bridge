@@ -90,8 +90,10 @@ class OrderForm:
             raise BridgeError("GUI_RESET_FAILED", "限价 IOC填参控件未取得焦点")
         self.gui.touched = True
 
-    def edit(self, identifier: int, text: str) -> None:
+    def edit(self, identifier: int, text: str, *, skip_unchanged: bool = False) -> None:
         window = self.control(identifier, "Edit")
+        if skip_unchanged and window.text == text:
+            return
         self.focus(window)
         # 空串通过单个 NUL 表达；控制器参数本身不承载任意窗口或函数地址。
         encoded = text.encode("gb18030").hex() or "00"
@@ -188,12 +190,12 @@ class OrderForm:
         self.gui.wait(lambda: all(w.hwnd != dialog.hwnd for w in self.gui.dialogs()), "手动预埋单窗口未退出")
 
     def restore(self, state: FormState) -> None:
-        self.edit(3301, state.instrument)
+        self.edit(3301, state.instrument, skip_unchanged=True)
         self.radio(3310 if state.side == "buy" else 3311, "买入" if state.side == "buy" else "卖出")
         identifier, label = {"open": (3312, "开仓"), "close": (3314, "平仓"), "close_today": (3313, "平今")}[state.offset]
         self.radio(identifier, label)
-        self.edit(3302, state.volume)
-        self.edit(3303, state.price)
+        self.edit(3302, state.volume, skip_unchanged=True)
+        self.edit(3303, state.price, skip_unchanged=True)
         self.time_mode(state.time_mode)
         if self.snapshot() != state:
             raise BridgeError("GUI_RESET_FAILED", "限价 IOC下单板收尾回读不一致")

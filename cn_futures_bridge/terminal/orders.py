@@ -112,7 +112,7 @@ class OrderActions:
             steps.capture_armed = True
             steps.save("submitting", effect="unknown")
             self.gui.key("alt+q")
-            self.gui.managed_snapshot()
+            self.gui.drain_notices()
             receipt = self.finish_capture(steps)
             assert receipt is not None
             steps.identity = receipt.identity(request, steps.parked_id, steps.session)
@@ -188,6 +188,6 @@ class OrderActions:
                 raise BridgeError("GUI_RESET_FAILED", "撤单确认未包含已核对的合约和订单编号")
             self.gui.activate(dialog.text);self.gui.key("Return")
             self.gui.wait(lambda: all(w.hwnd != dialog.hwnd for w in self.gui.dialogs()), "撤单确认未退出")
-            self.gui.baseline()
+            self.gui.ensure_ready()
             steps.save("submitted", effect="submitted")
         return SubmissionResult(request_id=steps.request_id, order_id=request.order_sys_id)

@@ -49,19 +49,11 @@ static BOOL CALLBACK top(HWND w,LPARAM unused){
 }
 void gui_query(ProbeState *s,HWND window){
     if(s->action==WINDOWS||s->action==STARTUP_DONE||s->action==MANAGED_WINDOWS){
-        if(s->trade_notice_window&&!IsWindowVisible((HWND)(uintptr_t)s->trade_notice_window)){
-            if(s->trade_notice_phase==3)s->trade_notice_closed_count++;
-            s->trade_notice_window=0;s->trade_notice_phase=0;
-        }
-        /* 附属网页可能只隐藏并复用句柄；观察到关闭后结束本轮去重。 */
-        if((s->startup_last_kind==5||(s->startup_last_kind>=7&&s->startup_last_kind<=12))
-                &&!IsWindowVisible((HWND)(uintptr_t)s->startup_last_window)){
-            s->startup_last_window=0;s->startup_last_kind=0;
-        }
+        reset_notice_state(s);
         active=s;count=0;document_pending=0;emit(s,"{\"windows\":[");EnumWindows(top,0);
         GUITHREADINFO info={0};info.cbSize=sizeof(info);GetGUIThreadInfo(GetCurrentThreadId(),&info);
-        emit(s,"],\"focus\":%lu,\"flags\":%lu,\"document_pending\":%s}",
-             (DWORD)(uintptr_t)info.hwndFocus,info.flags,document_pending?"true":"false");
+        emit(s,"],\"focus\":%lu,\"flags\":%lu,\"capture\":%lu,\"document_pending\":%s}",
+             (DWORD)(uintptr_t)info.hwndFocus,info.flags,(DWORD)(uintptr_t)info.hwndCapture,document_pending?"true":"false");
         if(s->action==STARTUP_DONE&&!document_pending&&!s->error)s->startup_active=0;
         active=NULL;return;
     }

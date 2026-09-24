@@ -163,6 +163,7 @@ static void handle(HWND window) {
     if (!state->error && (state->action==PARKED || state->action==MENU)) market_query(state,window);
     if (!state->error && state->action==RECEIPT) receipt_query(state,window);
     if (!state->error && state->action==TRACKING) tracking_query(state,window);
+    if (!state->error && (state->action==GUI_STATE || state->action==GUI_RECOVER)) readiness_query(state,window);
     state->done=1;
 }
 

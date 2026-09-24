@@ -74,9 +74,9 @@ class Executor:
             time.sleep(max(.1, self.settings.execution.poll_interval_ms / 1000))
         self.login_established = True
         self.validate_session(rebind=True)
-        self.gui.baseline()
+        self.gui.ensure_ready()
         self.native.complete_startup()
-        self.gui.baseline()
+        self.gui.ensure_ready()
         LOG.info("启动账户身份及交易/行情连接已核对", extra={"step": "login_ready", "event": "end"})
 
     def validate_session(self, *, rebind: bool = False) -> Session:
@@ -208,7 +208,7 @@ class Executor:
             with steps.step("prepare"):
                 session = self.validate_session()
                 steps.session = session
-                self.gui.baseline()
+                self.gui.ensure_ready(keyboard=steps.writes or isinstance(request, BalanceQuery))
                 if not native_only:
                     steps.directory = self.artifacts.create()
                 owned = True
@@ -258,7 +258,9 @@ class Executor:
                 try:
                     with steps.step("cleanup"):
                         if not self.native.poisoned:
-                            self.gui.managed_snapshot()
+                            if (steps.capture_armed or steps.market_dialog is not None
+                                    or steps.owned_row is not None or steps.form_state is not None):
+                                self.gui.drain_notices()
                             self.orders.finish_capture(steps)
                             self.market.close_dialog(steps)
                             self.orders.cleanup(steps)
@@ -272,8 +274,11 @@ class Executor:
             if error and (error.code in CONNECTION_ERRORS or error.code in ("GUI_UNRESPONSIVE", "GUI_RESET_FAILED", "STORAGE_UNAVAILABLE", "SERVICE_NOT_READY")
                           or self.native.poisoned or (steps.effect == "unknown" and steps.owned_row is None)):
                 self.fail(error)
-            if error and error.code in ("GUI_UNRESPONSIVE", "GUI_RESET_FAILED") and steps.directory:
-                self.screenshot(steps)
+            if error and error.code in ("GUI_UNRESPONSIVE", "GUI_RESET_FAILED"):
+                if steps.directory:
+                    self.screenshot(steps)
+                else:
+                    self.failure_evidence(error)
         if error:
             error.submission_status = steps.effect or error.submission_status
             error.identity = steps.identity

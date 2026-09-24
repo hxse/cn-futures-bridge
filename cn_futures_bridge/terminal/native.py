@@ -47,6 +47,7 @@ class NativeReply(BaseModel):
     startup_terms_count: int = 0
     startup_wizard_count: int = 0
     settlement_count: int = 0
+    empty_settlement_count: int = 0
     information_close_count: int = 0
     trade_notice_check_count: int = 0
     trade_notice_checked_count: int = 0
@@ -84,7 +85,24 @@ class Windows(BaseModel):
     windows: list[Window]
     focus: int
     flags: int
+    capture: int = 0
     document_pending: bool = False
+
+
+class GuiState(BaseModel):
+    main: int
+    main_count: int
+    enabled: bool
+    focus: int
+    flags: int
+    capture: int
+    menu_owned: bool
+    modifiers: int
+    dialogs: int
+    unknown_dialogs: int
+    funds: int
+    funds_count: int
+    document_pending: bool
 
 
 class Session(BaseModel):
@@ -131,6 +149,7 @@ class NativeClient:
         self.startup_counts = (0, 0, 0, 0, 0)
         self.notice_counts = (0, 0, 0, 0)
         self.order_notice_count = 0
+        self.empty_settlement_count = 0
         self.startup_deadline: float | None = None
         self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
                         WINEPREFIX=str(settings.wine_prefix), WINEDEBUG="-all",
@@ -201,7 +220,7 @@ class NativeClient:
             process.stdin.write((command + "\n").encode("gb18030"))
             process.stdin.flush()
             timeout = self.timeout
-            if command in ("windows", "startup_done", "managed_windows") and self.startup_deadline is not None:
+            if command in ("windows", "startup_done", "managed_windows", "gui_state") and self.startup_deadline is not None:
                 timeout = max(timeout, self.startup_deadline - time.monotonic() + 1)
             result = NativeReply.model_validate_json(self._read(timeout))
         except (OSError, ValueError) as exc:
@@ -215,6 +234,10 @@ class NativeClient:
                 LOG.info("已投递文档窗口处理请求：%s，累计 %s 次", name, current,
                          extra={"step": "document_confirmation", "event": "submitted"})
         self.startup_counts = counts
+        if result.empty_settlement_count > self.empty_settlement_count:
+            LOG.info("SimNow 全天站点空结算单已核对查询成功及稳定空正文，已投递确认，累计 %s 次", result.empty_settlement_count,
+                     extra={"step": "empty_settlement_confirmation", "event": "submitted"})
+        self.empty_settlement_count = result.empty_settlement_count
         if result.order_notice_count > self.order_notice_count:
             title = {7: "下单失败", 8: "下单成功", 9: "撤单成功(即时单)",
                      10: "撤单失败(即时单)", 11: "撤单成功", 12: "撤单失败"}.get(result.order_notice_kind, "交易结果通知")
@@ -239,6 +262,8 @@ class NativeClient:
         if result.error == 71:
             self.poisoned = True
             raise BridgeError("GUI_RESET_FAILED", "报单引用观察入口未确认恢复，隔离执行器")
+        if result.error == 72 or (command.split(" ", 1)[0] in ("gui_state", "recover_gui") and result.error in (91, 92)):
+            raise BridgeError("GUI_RESET_FAILED", "原生界面恢复条件或目标身份未确认")
         if result.error in (1, 40, 43, 70):
             raise BridgeError("SERVICE_NOT_READY", f"固定版本或必需原生符号未就绪，代码 {result.error}")
         if result.error:
@@ -250,6 +275,9 @@ class NativeClient:
 
     def managed_windows(self) -> Windows:
         return Windows.model_validate(self.ask("managed_windows").data)
+
+    def gui_state(self) -> GuiState:
+        return GuiState.model_validate(self.ask("gui_state").data)
 
     def complete_startup(self) -> None:
         while Windows.model_validate(self.ask("startup_done").data).document_pending:

@@ -99,7 +99,7 @@ def test_login_waits_for_identity_and_rejects_new_login(tmp_path: Path, monkeypa
         monkeypatch.setattr(executor.native, "session", lambda: next(observations))
         monkeypatch.setattr(executor.native, "complete_startup", lambda: completed.append(True))
         monkeypatch.setattr(executor.gui, "login", lambda: None)
-        monkeypatch.setattr(executor.gui, "baseline", lambda: window)
+        monkeypatch.setattr(executor.gui, "ensure_ready", lambda: None)
         executor.native.startup_deadline = time.monotonic() + 2
         if changed:
             with pytest.raises(BridgeError) as error:

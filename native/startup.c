@@ -106,10 +106,51 @@ static int order_notice(ProbeState *s,HWND window,DWORD kind){
     return 1;
 }
 
-static int settlement_loaded(HWND body){
+typedef struct { ProbeState *state;HWND owner;unsigned matches;int success; } SettlementStatus;
+static BOOL CALLBACK settlement_status(HWND w,LPARAM value){
+    SettlementStatus *status=(SettlementStatus *)value;
+    if(GetDlgCtrlID(w)!=1257||!IsWindowVisible(w))return TRUE;
+    DWORD pid=0,thread=GetWindowThreadProcessId(w,&pid);
+    WCHAR cls[64],text[128];GetClassNameW(w,cls,64);
+    if(pid!=status->state->pid||thread!=status->state->gui_thread
+        ||GetAncestor(w,GA_ROOT)!=status->owner||wcscmp(cls,L"Static"))return TRUE;
+    status->matches++;
+    int length=GetWindowTextW(w,text,128);
+    /* 固定状态控件格式为 HH:MM:SS、Tab、消息；不把包含成功字样的任意正文当完成证据。 */
+    if(length<10||text[2]!=L':'||text[5]!=L':'||text[8]!=L'\t')return TRUE;
+    const unsigned digits[]={0,1,3,4,6,7};
+    for(unsigned i=0;i<6;i++)if(text[digits[i]]<L'0'||text[digits[i]]>L'9')return TRUE;
+    if((text[0]-L'0')*10+text[1]-L'0'>23||(text[3]-L'0')*10+text[4]-L'0'>59
+        ||(text[6]-L'0')*10+text[7]-L'0'>59)return TRUE;
+    while(length>9&&(text[length-1]==L'\r'||text[length-1]==L'\n'||text[length-1]==L' '))text[--length]=0;
+    status->success=!wcscmp(text+9,L"查询结算单成功");
+    return TRUE;
+}
+static int empty_settlement_ready(ProbeState *s,HWND window){
+    const WCHAR *title=L"快期2-CTP-上期技术-全天站点";
+    if((wcscmp(s->main_titles[0],title)&&wcscmp(s->main_titles[1],title))
+        ||!IsWindowEnabled(window)||!IsWindowEnabled(GetDlgItem(window,IDOK))
+        ||!IsWindowEnabled(GetDlgItem(window,IDCANCEL)))goto unavailable;
+    SettlementStatus status={s,GetWindow(window,GW_OWNER),0,0};
+    EnumChildWindows(status.owner,settlement_status,(LPARAM)&status);
+    if(status.matches!=1||!status.success)goto unavailable;
+    DWORD id=(DWORD)(uintptr_t)window;
+    if(s->empty_settlement_window!=id){
+        s->empty_settlement_window=id;s->empty_settlement_since=GetTickCount64();return 0;
+    }
+    return GetTickCount64()-s->empty_settlement_since>=250;
+unavailable:
+    s->empty_settlement_window=0;s->empty_settlement_since=0;return 0;
+}
+static int settlement_loaded(ProbeState *s,HWND window,HWND body){
     /* 显式读取 Unicode，避免 RichEdit20A 的 ANSI 消息转换截断中文正文。 */
     GETTEXTLENGTHEX measure={GTL_PRECISE|GTL_NUMCHARS,1200};
     LRESULT length=SendMessageW(body,EM_GETTEXTLENGTHEX,(WPARAM)&measure,0);
+    if(length==0){
+        if(empty_settlement_ready(s,window))return 2;
+        return 0;
+    }
+    s->empty_settlement_window=0;s->empty_settlement_since=0;
     if(length<128||length>524288)return 0;
     size_t bytes=((size_t)length+1)*sizeof(WCHAR);
     WCHAR *text=calloc((size_t)length+1,sizeof(WCHAR));if(!text)return 0;
@@ -118,6 +159,21 @@ static int settlement_loaded(HWND body){
     int ready=read==length&&wcsstr(text,L"结算单")&&wcsstr(text,L"客户号")
         &&wcsstr(text,L"资金状况")&&wcsstr(text,L"Client ID");
     SecureZeroMemory(text,bytes);free(text);return ready;
+}
+
+void reset_notice_state(ProbeState *s){
+    if(s->trade_notice_window&&!IsWindowVisible((HWND)(uintptr_t)s->trade_notice_window)){
+        if(s->trade_notice_phase==3)s->trade_notice_closed_count++;
+        s->trade_notice_window=0;s->trade_notice_phase=0;
+    }
+    /* 快期可能隐藏并复用句柄；全量读取和轻量检查共享去重状态。 */
+    if((s->startup_last_kind==4||s->startup_last_kind==5||(s->startup_last_kind>=7&&s->startup_last_kind<=12))
+            &&!IsWindowVisible((HWND)(uintptr_t)s->startup_last_window)){
+        s->startup_last_window=0;s->startup_last_kind=0;
+    }
+    if(s->empty_settlement_window&&!IsWindowVisible((HWND)(uintptr_t)s->empty_settlement_window)){
+        s->empty_settlement_window=0;s->empty_settlement_since=0;
+    }
 }
 
 int confirm_document(ProbeState *s,HWND window,int allow_runtime){
@@ -174,12 +230,14 @@ int confirm_document(ProbeState *s,HWND window,int allow_runtime){
         GetClassNameW(GetDlgItem(window,7601),cls,64);
         if(wcscmp(cls,L"RichEdit20A"))return 0;
     }
+    int settlement_kind=0;
     if(kind==4){
         HWND body=GetDlgItem(window,7601);
         if(GetParent(confirm)!=window||GetParent(cancel)!=window||GetParent(body)!=window
             ||!IsWindowVisible(window)||!IsWindowVisible(body)||!IsWindowVisible(confirm)||!IsWindowVisible(cancel)
             ||!(GetWindowLongW(body,GWL_STYLE)&ES_READONLY))return 0;
-        if(!settlement_loaded(body))return 1;
+        settlement_kind=settlement_loaded(s,window,body);
+        if(!settlement_kind)return 1;
     }
     if(s->startup_last_window==(DWORD)(uintptr_t)window&&s->startup_last_kind==kind)return 1;
     if(!IsWindowEnabled(window)||(kind!=5&&(!IsWindowEnabled(confirm)||!IsWindowEnabled(cancel)))
@@ -192,7 +250,7 @@ int confirm_document(ProbeState *s,HWND window,int allow_runtime){
         if(kind==1)s->startup_privacy_count++;
         else if(kind==2)s->startup_terms_count++;
         else if(kind==3)s->startup_wizard_count++;
-        else if(kind==4)s->settlement_count++;
+        else if(kind==4){s->settlement_count++;if(settlement_kind==2)s->empty_settlement_count++;}
         else s->information_close_count++;
     }
     return 1;
