@@ -7,6 +7,13 @@ version = "2.93.405.1998"
 payload = "userappdata/Q72_shinny_21990_beta/00000000000000"
 executable = "q7_release.exe"
 
+[wine_gecko]
+# Wine 11.0 appwiz.cpl/addons.c 声明的 x86 Gecko，构建时验证后共享使用。
+version = "2.47.4"
+architecture = "x86"
+url = "https://dl.winehq.org/wine/wine-gecko/2.47.4/wine-gecko-2.47.4-x86.msi"
+sha256 = "26cecc47706b091908f7f814bddb074c61beb8063318e9efc5a7f789857793d6"
+
 [profiles.simnow]
 environment = "simnow"
 broker_id = "9999"

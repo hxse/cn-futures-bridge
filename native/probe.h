@@ -47,5 +47,7 @@ void hex_text(ProbeState *request, const char *value);
 uintptr_t window_object(HWND window, int dialog);
 int valid_path(ProbeState *request);
 int matches_main(ProbeState *request,HWND window);
+enum { MONITOR_NONE, MONITOR_PENDING, MONITOR_READY };
+int monitor_window(ProbeState *request,HWND window);
 int confirm_document(ProbeState *request,HWND window,int allow_runtime);
 #endif

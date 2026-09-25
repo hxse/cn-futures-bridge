@@ -11,6 +11,12 @@ FROM toolchain AS dependencies
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
+FROM dependencies AS gecko-assets
+RUN apt-get update && apt-get install -y --no-install-recommends msitools \
+    && rm -rf /var/lib/apt/lists/*
+COPY terminal.lock.toml container/prepare_gecko.py /tmp/
+RUN /opt/venv/bin/python /tmp/prepare_gecko.py /tmp/terminal.lock.toml /opt/gecko
+
 FROM toolchain AS capture-build
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev libx11-dev libpng-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -37,8 +43,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i
     && rm -rf /var/lib/apt/lists/*
 COPY native ./native
 RUN mkdir /native && i686-w64-mingw32-gcc -Wall -Wextra -Werror -Wno-unused-parameter -O2 -static-libgcc -shared \
-    native/hook.c native/import_scope.c native/common.c native/query.c native/gui.c native/grid.c native/startup.c native/market.c native/receipt.c native/tracking.c native/readiness.c \
-    -o /native/cfb-hook.dll -Wl,--kill-at \
+    native/hook.c native/import_scope.c native/common.c native/query.c native/gui.c native/grid.c native/startup.c native/browser.c native/market.c native/receipt.c native/tracking.c native/readiness.c \
+    -o /native/cfb-hook.dll -Wl,--kill-at -lole32 -loleaut32 -luuid \
     && i686-w64-mingw32-gcc -Wall -Wextra -Werror -Wno-unused-parameter -O2 -static-libgcc -municode \
     native/controller.c -o /native/cfb-controller.exe
 
@@ -78,6 +84,7 @@ RUN install -d -o root -g root -m 1777 /tmp/.X11-unix
 WORKDIR /opt/bridge
 COPY --from=dependencies /opt/venv /opt/venv
 COPY --from=native-build /native /opt/bridge/native
+COPY --from=gecko-assets /opt/gecko /usr/share/wine/gecko
 ENV PATH="/opt/venv/bin:${PATH}"
 COPY --from=payload /opt/terminal /opt/terminal
 COPY cn_futures_bridge ./cn_futures_bridge

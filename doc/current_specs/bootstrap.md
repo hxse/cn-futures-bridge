@@ -8,7 +8,9 @@
 
 headless 与 vnc 共用终端、Python 依赖和业务代码；vnc 只增加远程桌面组件。两者都有 Xvfb/Openbox、截图和中文字体，1280×800/96 DPI 为默认设置。Xvfb 关闭 GLX，保留二维 X11。先确认显示与窗口管理器，再引导 Wine 会话、启动客户端；持久化前缀不跳过 Wine 会话引导。
 
-Wine 保留官方包及其必要依赖，Mono/MSHTML 仍由运行环境禁用。优化优先考虑运行内存和构建耗时，不为缩小镜像引入完整 Wine 源码编译，也不强行删除 dpkg 依赖或任意 Wine 服务。原生桥接和轻量截图工具仍在独立构建阶段编译，运行镜像只携带产物。
+Wine 保留官方包及其必要依赖，仅禁用 Mono（mscoree），启用内置 MSHTML。terminal.lock.toml 的 wine_gecko 锁定官方 Gecko 2.47.4/x86 下载地址与 SHA256；构建时校验后提取到 /usr/share/wine/gecko/wine-gecko-2.47.4-x86，两种运行镜像共享该资源，不在启动时下载。每次 wineboot 后、启动终端前执行 wine regsvr32 /s mshtml.dll，已有 .bridge-initialized 前缀也注册，修复历史 HTML MIME/about 协议缺失；失败返回 HTML_SETUP_FAILED 并阻断启动。正常容器启动和终端重连共用此流程，旧卷无需删除或手工迁移。
+
+优化优先考虑运行内存和构建耗时，不为缩小镜像引入完整 Wine 源码编译，也不强行删除 dpkg 依赖或任意 Wine 服务。Gecko 提取工具、原生桥接和轻量截图工具的编译依赖留在独立构建阶段，运行镜像只携带产物。
 
 诊断和失败证据统一使用 `cfb-capture`，读取 X11 根窗口并通过 libpng 保存 RGB PNG，保留超时和原有容量治理；不安装 scrot。Openbox 仍依赖 Imlib2，因此其共用图像库继续保留。中文字体仍使用完整文泉驿微米黑及原有映射，不裁剪字库。
 

@@ -53,7 +53,7 @@ class Runtime:
         self.logs: LogStore | None = None
         self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
                         WINEPREFIX=str(settings.wine_prefix),
-                        WINEDEBUG="-all", WINEDLLOVERRIDES="mscoree,mshtml=")
+                        WINEDEBUG="-all", WINEDLLOVERRIDES="mscoree=")
 
     def acquire(self) -> None:
         self.settings.bridge.data_dir.mkdir(parents=True, exist_ok=True)
@@ -124,12 +124,19 @@ class Runtime:
                    "WINE_INIT_TIMEOUT", "Wine 初始化超时，查看 logs/wineboot.log")
         if process.returncode != 0:
             raise BridgeError("WINE_INIT_FAILED", "Wine 初始化失败，查看 logs/wineboot.log")
-        if marker.exists():
-            return
-        result = self._command(["wine", "regedit", "/S", "/opt/bridge/container/fonts.reg"], 30)
+        if not marker.exists():
+            result = self._command(["wine", "regedit", "/S", "/opt/bridge/container/fonts.reg"], 30)
+            if result.returncode != 0:
+                raise BridgeError("FONT_SETUP_FAILED", "Wine 字体映射初始化失败")
+            marker.write_text("win32\n")
+        # 旧前缀可能缺少 HTML MIME/about 协议注册；初始化标记不能跳过修复。
+        try:
+            result = self._command(["wine", "regsvr32", "/s", "mshtml.dll"], 30)
+        except subprocess.TimeoutExpired as exc:
+            raise BridgeError("HTML_SETUP_FAILED", "Wine 网页组件注册超时") from exc
         if result.returncode != 0:
-            raise BridgeError("FONT_SETUP_FAILED", "Wine 字体映射初始化失败")
-        marker.write_text("win32\n")
+            raise BridgeError("HTML_SETUP_FAILED", "Wine 网页组件注册失败")
+        LOG.info("Wine 网页组件注册完成", extra={"step": "html_setup"})
 
     def _has_window(self, *, login_only: bool = False) -> bool:
         process = self.processes.get("terminal")

@@ -183,17 +183,18 @@ int confirm_document(ProbeState *s,HWND window,int allow_runtime){
     if(!startup&&!allow_runtime)return 0;
     DWORD pid;DWORD thread=GetWindowThreadProcessId(window,&pid);
     if(pid!=s->pid||thread!=s->gui_thread||GetAncestor(window,GA_ROOT)!=window)return 0;
-    WCHAR cls[64],title[128];GetClassNameW(window,cls,64);
+    WCHAR cls[64],title[128]={0};GetClassNameW(window,cls,64);
+    if(wcscmp(cls,L"#32770"))return 0;
+    int monitor=allow_runtime?monitor_window(s,window):MONITOR_NONE;
+    if(monitor==MONITOR_PENDING)return 1;
     int title_length=GetWindowTextLengthW(window);
     /* ANSI 窗口的长度是缓冲区上界，中文标题可能估为 8、实际读取为 4。 */
-    if(title_length>=128||GetWindowTextW(window,title,128)<=0)return 0;
-    if(wcscmp(cls,L"#32770"))return 0;
-    DWORD kind=0;
+    if(monitor!=MONITOR_READY&&(title_length>=128||GetWindowTextW(window,title,128)<=0))return 0;
+    DWORD kind=monitor==MONITOR_READY?5:0;
     if(!wcscmp(title,L"快期隐私政策")||!wcscmp(title,L"隐私政策"))kind=1;
     if(!wcscmp(title,L"快期用户协议")||!wcscmp(title,L"快期软件使用协议"))kind=2;
     if(!wcscmp(title,L"快速配置向导"))kind=3;
     if(!wcscmp(title,L"确认结算单"))kind=4;
-    if(!wcscmp(title,L"保证金监控中心"))kind=5;
     if(notice_title(title,L"成交通知"))kind=6;
     if(notice_title(title,L"下单失败"))kind=7;
     if(notice_title(title,L"下单成功"))kind=8;
@@ -212,19 +213,14 @@ int confirm_document(ProbeState *s,HWND window,int allow_runtime){
     if(kind>=7&&kind<=12)return order_notice(s,window,kind);
     HWND confirm=GetDlgItem(window,IDOK),cancel=GetDlgItem(window,IDCANCEL);
     int command=IDOK;
-    if(kind==5){
-        HWND body=GetDlgItem(window,1224);
-        GetClassNameW(body,cls,64);
-        if(confirm||cancel||!body||GetParent(body)!=window||!IsWindowVisible(body)
-            ||wcscmp(cls,L"AtlAxWinLic100")||!(GetWindowLongW(window,GWL_STYLE)&WS_SYSMENU))return 0;
-    }else if(kind==3){
+    if(kind==3){
         if(!button(cancel,L"取消",L"取消",0)
             ||!button(GetDlgItem(window,1246),L"下一步 >",L"下一步 >",0)
             ||!button(GetDlgItem(window,1247),L"完成",L"完成",0))return 0;
         GetClassNameW(GetDlgItem(window,1224),cls,64);
         if(wcscmp(cls,L"AtlAxWinLic100"))return 0;
         confirm=cancel;command=IDCANCEL;
-    }else{
+    }else if(kind!=5){
         if(!button(confirm,L"确认",kind==4?L"确认":L"同意",0)
             ||!button(cancel,L"取消",kind==4?L"取消":L"不同意",0))return 0;
         GetClassNameW(GetDlgItem(window,7601),cls,64);

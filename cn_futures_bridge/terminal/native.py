@@ -181,7 +181,7 @@ class NativeClient:
         self.startup_deadline: float | None = None
         self.env = dict(os.environ, DISPLAY=":99", WINEARCH="win32",
                         WINEPREFIX=str(settings.wine_prefix), WINEDEBUG="-all",
-                        WINEDLLOVERRIDES="mscoree,mshtml=")
+                        WINEDLLOVERRIDES="mscoree=")
         self.timeout = settings.execution.step_timeout_ms / 1000 + .5
 
     def start(self) -> None:

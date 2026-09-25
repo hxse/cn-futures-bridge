@@ -18,12 +18,12 @@ def unknown_state() -> GuiState:
                     funds=0, funds_count=0, document_pending=False)
 
 
-def desktop(title: str = "", *, pending: bool = False) -> Windows:
+def desktop(title: str | None = None, *, pending: bool = False) -> Windows:
     main = Window(hwnd=1, parent=0, root=1, checked=0, id=0, class_name="main",
-                  visible=True, enabled=not title, password=False, rect=(0, 0, 800, 600),
+                  visible=True, enabled=title is None, password=False, rect=(0, 0, 800, 600),
                   text_hex="快期2-CTP-上期技术-电信2".encode("gb18030").hex(), items_hex=[])
     windows = [main]
-    if title:
+    if title is not None:
         windows.append(main.model_copy(update={"hwnd": 2, "root": 2, "parent": 1,
                        "class_name": "#32770", "enabled": True,
                        "text_hex": title.encode("gb18030").hex()}))
@@ -55,11 +55,14 @@ def test_startup_waits_for_document_but_rejects_unknown_dialog(tmp_path: Path, m
     assert error.value.code == "QUERY_TIMEOUT"
 
 
-def test_late_information_window_waits_for_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("title", ["", "保证金监控中心"])
+def test_late_information_window_waits_for_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, title: str,
+) -> None:
     settings = Settings(bridge=BridgeConfig(data_dir=tmp_path))
     native = NativeClient(settings, LogStore(settings))
     gui = Gui(native, settings)
-    pending, ready = desktop("保证金监控中心", pending=True), desktop()
+    pending, ready = desktop(title, pending=True), desktop()
     snapshots = iter([pending, pending, ready])
     commands: list[str] = []
     def answer(command: str) -> NativeReply:
@@ -69,8 +72,8 @@ def test_late_information_window_waits_for_close(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(native, "ask", answer)
     assert native.startup_deadline is None and gui.baseline() == ready
     assert commands == ["managed_windows"] * 3
-    # 同名但不满足原生模板的窗口不能被基线当作已经处理。
-    monkeypatch.setattr(native, "managed_windows", lambda: desktop("保证金监控中心"))
+    # 相同标题但不满足原生模板的窗口不能被基线当作已经处理。
+    monkeypatch.setattr(native, "managed_windows", lambda: desktop(title))
     monkeypatch.setattr(native, "gui_state", unknown_state)
     with pytest.raises(BridgeError) as error:
         gui.baseline()
